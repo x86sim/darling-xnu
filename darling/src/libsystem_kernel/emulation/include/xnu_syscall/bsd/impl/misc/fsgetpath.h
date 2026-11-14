@@ -7,6 +7,21 @@ long sys_fsgetpath(const char* buf, unsigned long size, void* fsid, unsigned lon
 // resolve them (Linux has no inode -> path lookup); volumes then advertise VOL_CAP_FMT_PATH_FROM_ID
 void fsgetpath_remember(unsigned int dev, unsigned long long ino, const char* path);
 
+// x86Sim: a rename moves the remembered path of the renamed object (and of everything under a renamed directory),
+// as XNU's fsgetpath follows the object: prepare before the Linux rename (Linux dfd + path), done after it succeeded
+struct fsgp_rename
+{
+	unsigned int dev;
+	unsigned long long ino;
+	int known, isdir;
+	char oldpath[1024];
+};
+void fsgetpath_rename_prepare(int ldfd, const char* lpath, struct fsgp_rename* r);
+void fsgetpath_rename_done(int ldfd, const char* lpath, const struct fsgp_rename* r);
+// renameatx_np RENAME_SWAP: r1's object is now at (ldfd1, lpath1) and r2's at (ldfd2, lpath2), rewritten in one pass
+void fsgetpath_rename_swap_done(int ldfd1, const char* lpath1, const struct fsgp_rename* r1, int ldfd2, const char* lpath2,
+		const struct fsgp_rename* r2);
+
 // x86Sim: openbyid_np (479), see fsgetpath.c
 long sys_openbyid_np(void* fsid, void* objid, int oflags);
 
