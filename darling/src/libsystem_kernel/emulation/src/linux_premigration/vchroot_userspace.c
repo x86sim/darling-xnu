@@ -672,6 +672,17 @@ done_getdents:
 								ctxt->current_root = prefix_path;
 								ctxt->current_root_len = prefix_path_len;
 							}
+							// x86Sim: ... except one whose target is itself a /Volumes/SystemRoot path: a Darwin program
+							// wrote it (the host root never has a /Volumes/SystemRoot), e.g. an app's absolute symlink in
+							// its data container, which lives under /Volumes/SystemRoot/<repo>/var/<device>. Resolved as
+							// the program sees it (through the prefix, which leaves to the real root again); as a host
+							// path it was ENOENT (FileManager.createSymbolicLink(at:withDestinationURL:) then unreadable).
+							else if (link[0] == '/' && ctxt->current_root_len == 0 &&
+								strncasecmp_l(link, EXIT_PATH, sizeof(EXIT_PATH) - 1, LC_C_LOCALE) == 0 &&
+								(link[sizeof(EXIT_PATH) - 1] == '/' || link[sizeof(EXIT_PATH) - 1] == '\0')) {
+								ctxt->current_root = prefix_path;
+								ctxt->current_root_len = prefix_path_len;
+							}
 
 							rv = vchroot_run(link, ctxt);
 
