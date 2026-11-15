@@ -157,6 +157,11 @@ vm_protect(
 	return rv;
 }
 
+// x86Sim: Darling's libsystem_kernel emulation (mach_traps.c); MACH_SEND_INVALID_DEST = not handled there
+extern kern_return_t __darling_x86sim_vm_map_copy(mach_port_name_t target, mach_vm_address_t *address,
+    mach_vm_size_t size, mach_vm_offset_t mask, int flags, mach_port_name_t object, memory_object_offset_t offset,
+    vm_prot_t cur_protection);
+
 kern_return_t
 mach_vm_map(
 	mach_port_name_t target,
@@ -177,6 +182,12 @@ mach_vm_map(
 	    inheritance == VM_INHERIT_DEFAULT) {
 		rv = _kernelrpc_mach_vm_map_trap(target, address, size, mask, flags,
 		    cur_protection);
+	}
+
+	// x86Sim: a copy of a memory entry into this task is made here (darlingserver only hands over the entry's memfd)
+	if (rv == MACH_SEND_INVALID_DEST && object != MEMORY_OBJECT_NULL && copy) {
+		rv = __darling_x86sim_vm_map_copy(target, address, size, mask, flags, object,
+		    offset, cur_protection);
 	}
 
 	if (rv == MACH_SEND_INVALID_DEST) {

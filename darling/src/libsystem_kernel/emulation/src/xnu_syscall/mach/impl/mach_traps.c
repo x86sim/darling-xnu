@@ -247,6 +247,97 @@ kern_return_t _kernelrpc_mach_vm_allocate_trap_impl(
 	}
 }
 
+// x86Sim: mach_vm_map(copy=TRUE) of a memory entry into this task (libsyscall mach_vm.c), done here instead of by
+// darlingserver. The MIG routine had darlingserver allocate the pages in this process with an S2C mmap (a round trip
+// to this thread) and write the snapshot into them with process_vm_writev, taking every page fault remotely: ~26 us
+// of darlingserver per call, and libxpc maps each out-of-line xpc_data (> 16 KB) this way (~1800/s, ~30 per frame on
+// an idle visionOS device). Now darlingserver hands over the entry's memfd and the range (x86sim_entry_copy_fd), and
+// this allocates private memory as the vm_map trap does and preads the same bytes into it: the same private snapshot
+// of the entry's current contents, the same protection (cur_protection plus write, as darlingserver gave it) and
+// placement flags. Anything else returns MACH_SEND_INVALID_DEST and the caller uses the MIG routine: another task,
+// unusual flags, frozen snapshots (>= 256 KB, darlingserver shares those pages), and a darlingserver too old to know
+// the call (probed once per process with x86sim_memfd_for_region(0, 0): a call number the server doesn't know is
+// dropped and its caller would wait for ever).
+static int x86sim_entry_copy_supported = -1;
+
+kern_return_t __darling_x86sim_vm_map_copy(
+				mach_port_name_t target,
+				mach_vm_address_t *address,
+				mach_vm_size_t size,
+				mach_vm_offset_t mask,
+				int flags,
+				mach_port_name_t object,
+				memory_object_offset_t offset,
+				vm_prot_t cur_protection)
+{
+	if (target != mach_task_self() || size == 0)
+		return MACH_SEND_INVALID_DEST;
+	if ((flags & ~(VM_FLAGS_ANYWHERE | VM_FLAGS_OVERWRITE | VM_FLAGS_RETURN_DATA_ADDR | VM_FLAGS_ALIAS_MASK)) != 0
+		|| (flags >> 24) == VM_MEMORY_REALLOC)
+		return MACH_SEND_INVALID_DEST;
+
+	if (x86sim_entry_copy_supported < 0)
+	{
+		int probe_fd = -1;
+		uint64_t caps = 0;
+		uint32_t shared = 0;
+		int code = dserver_rpc_x86sim_memfd_for_region(0, 0, &probe_fd, &caps, &shared);
+		if (probe_fd >= 0)
+			LINUX_SYSCALL1(__NR_close, probe_fd);
+		x86sim_entry_copy_supported = (code == 0 && (caps & 1)) ? 1 : 0;
+	}
+	if (!x86sim_entry_copy_supported)
+		return MACH_SEND_INVALID_DEST;
+
+	int fd = -1;
+	uint64_t file_offset = 0, map_size = 0, data_adjust = 0;
+	if (dserver_rpc_x86sim_entry_copy_fd(object, offset, size, flags, &fd, &file_offset, &map_size, &data_adjust) != 0 || fd < 0)
+		return MACH_SEND_INVALID_DEST;
+
+	mach_vm_address_t addr = *address;
+	kern_return_t kr = KERN_SUCCESS;
+	if ((flags & VM_FLAGS_ANYWHERE) && mask == 0)
+	{
+		// the usual case: as the vm_map trap's mmap, but MAP_POPULATE: the pages are allocated in one go, not by a
+		// fault per page during the pread (64 KB: 6.5 instead of 9.5 us natively)
+		long r = LINUX_SYSCALL6(__NR_mmap, addr, map_size, (cur_protection | VM_PROT_WRITE) & 7,
+			LINUX_MAP_PRIVATE | LINUX_MAP_ANONYMOUS | 0x8000 /* LINUX_MAP_POPULATE */, -1, 0);
+		if ((unsigned long)r > (unsigned long)-4096)
+			kr = KERN_NO_SPACE;
+		else
+			addr = r;
+	}
+	else
+		kr = _kernelrpc_mach_vm_map_trap_impl(target, &addr, map_size, mask,
+			flags & (VM_FLAGS_ANYWHERE | VM_FLAGS_OVERWRITE), cur_protection | VM_PROT_WRITE);
+	if (kr != KERN_SUCCESS)
+	{
+		LINUX_SYSCALL1(__NR_close, fd);
+		return kr;
+	}
+
+	uint64_t done = 0;
+	while (done < map_size)
+	{
+		long n = LINUX_SYSCALL(__NR_pread64, fd, (void*)(addr + done), map_size - done, file_offset + done);
+		if (n == -LINUX_EINTR)
+			continue;
+		if (n <= 0)
+			break;
+		done += n;
+	}
+	LINUX_SYSCALL1(__NR_close, fd);
+	if (done < map_size)
+	{
+		// the entry is always as large as the range (darlingserver checked): failing here is unexpected
+		LINUX_SYSCALL2(__NR_munmap, addr, map_size);
+		return MACH_SEND_INVALID_DEST;
+	}
+
+	*address = addr + data_adjust;
+	return KERN_SUCCESS;
+}
+
 kern_return_t _kernelrpc_mach_vm_deallocate_trap_impl(
 				mach_port_name_t target,
 				mach_vm_address_t address,
