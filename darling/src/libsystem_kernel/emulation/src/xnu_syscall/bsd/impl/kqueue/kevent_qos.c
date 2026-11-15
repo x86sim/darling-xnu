@@ -782,13 +782,17 @@ static void wl_request_thread(struct workloop* wl)
 	sys_workq_kernreturn(WQOPS_QUEUE_REQTHREAD_FOR_KEVENT, &wl->data, 1, prio & ~PTHREAD_PRIORITY_EVENT_MANAGER_FLAG);
 }
 
-// Drop queued events for a knote that was deleted or disabled
+// Drop queued events for a knote that was deleted or disabled. x86Sim: an EV_UDATA_SPECIFIC knote is
+// (ident, filter, udata), as in libkqueue: two dispatch sources on one target (two DISPATCH_SOURCE_TYPE_PROC
+// sources on a child) are two knotes, and the first one's EV_ONESHOT delete or EV_DISPATCH disable dropped the
+// other's queued event with it.
 static void wl_purge_locked(struct workloop* wl, const struct kevent_qos_s* ch)
 {
 	int i, n = 0;
 	for (i = 0; i < wl->npending; i++)
 	{
-		if (wl->pending[i].ident == ch->ident && wl->pending[i].filter == ch->filter)
+		if (wl->pending[i].ident == ch->ident && wl->pending[i].filter == ch->filter
+				&& (!(ch->flags & EV_UDATA_SPECIFIC) || wl->pending[i].udata == ch->udata))
 			continue;
 		wl->pending[n++] = wl->pending[i];
 	}
