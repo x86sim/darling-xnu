@@ -321,6 +321,29 @@ static void handle_signal_without_server(int linux_signum, struct linux_siginfo*
 	LINUX_SYSCALL(__NR_tgkill, pid, tid, linux_signum);
 }
 
+// Signal taps: libkqueue's EVFILT_SIGNAL registers one (__darling_sigexc_add_tap) to count every signal the process
+// receives, as XNU's kqueue records a signal when it is posted, whatever its disposition (dispatch signal sources:
+// the app usually sets SIG_IGN). libkqueue used to rely on a signalfd plus blocking the signal on the registering
+// thread only: a process-directed signal that Linux delivered to any other thread came here and was dropped as
+// ignored, so a source missed most signals. Called from the handler: taps must be async-signal-safe.
+#define SIGEXC_MAX_TAPS 4
+static void (*volatile sigexc_taps[SIGEXC_MAX_TAPS])(int bsd_signum);
+
+VISIBLE
+int __darling_sigexc_add_tap(void (*tap)(int bsd_signum))
+{
+	for (int i = 0; i < SIGEXC_MAX_TAPS; i++)
+	{
+		if (sigexc_taps[i] == tap)
+			return 0;
+		if (__sync_bool_compare_and_swap(&sigexc_taps[i], NULL, tap))
+			return 0;
+		if (sigexc_taps[i] == tap)
+			return 0;
+	}
+	return -1;
+}
+
 void sigexc_handler(int linux_signum, struct linux_siginfo* info, struct linux_ucontext* ctxt)
 {
 	int status = dserver_rpc_interrupt_enter();
@@ -372,6 +395,13 @@ void sigexc_handler(int linux_signum, struct linux_siginfo* info, struct linux_u
 	}
 
 	linux_signum = signum_bsd_to_linux(bsd_signum);
+
+	for (int i = 0; i < SIGEXC_MAX_TAPS; i++)
+	{
+		void (*tap)(int) = sigexc_taps[i];
+		if (tap)
+			tap(bsd_signum);
+	}
 
 	if (sig_handlers[linux_signum] != SIG_IGN)
 	{
