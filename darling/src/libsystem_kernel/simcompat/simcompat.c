@@ -134,9 +134,12 @@ EXPORT int mknodat(int fd, const char* path, mode_t mode, dev_t dev)
 	return mknod(path, mode, dev);
 }
 
+// x86Sim: kept in the attributes for the child (emulation process/posix_spawn.c, helper/misc/dataless.c): launchd's
+// xpcproxy gives apps "dataless file mode" (ON) and other jobs OFF
+extern int x86sim_spawnattr_set_dataless(void* attr, int policy);
 EXPORT int posix_spawnattr_setdataless_iopolicy_np(void* attr, int policy)
 {
-	return 0;
+	return x86sim_spawnattr_set_dataless(attr, policy);
 }
 
 /* --- Skywalk channels (user-space networking): unsupported ------------- */

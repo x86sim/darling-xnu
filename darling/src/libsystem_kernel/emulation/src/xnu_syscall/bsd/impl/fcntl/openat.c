@@ -11,6 +11,7 @@
 #include <darling/emulation/common/simple.h>
 #include <darling/emulation/linux_premigration/vchroot_expand.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/bsdthread/cancelable.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/misc/dataless.h> // x86Sim
 
 #include <darlingserver/rpc.h>
 
@@ -110,10 +111,33 @@ long sys_openat_nocancel(int fd, const char* filename, int flags, unsigned int m
 	// `l` variant (e.g. `llistxattr` instead of `listxatrr`) or we're screwed
 
 	ret = LINUX_SYSCALL(__NR_openat, vc.dfd, vc.path, linux_flags, mode);
+	// x86Sim: a name looked up in a dataless directory makes it materialize first (helper/misc/dataless.c)
+	if (ret == -2 /* Linux ENOENT */ && x86sim_dataless_fault_parent(vc.dfd, vc.path) == 1)
+		ret = LINUX_SYSCALL(__NR_openat, vc.dfd, vc.path, linux_flags, mode);
 	if (ret < 0)
 		ret = errno_linux_to_bsd(ret);
 	else if (linux_flags & LINUX_O_PATH)
 		ret = reopen_non_symlink(ret, linux_flags);
+
+	// x86Sim: opening a dataless file or directory materializes it, and then it is opened again: the descriptor of a
+	// directory would not see the entries materialization added (helper/misc/dataless.c)
+	if (ret >= 0)
+	{
+		long err = x86sim_dataless_fault_fd(ret, flags);
+		if (err != 0)
+		{
+			LINUX_SYSCALL(__NR_close, ret);
+			ret = err;
+		}
+		if (err == 1)
+		{
+			ret = LINUX_SYSCALL(__NR_openat, vc.dfd, vc.path, linux_flags & ~(LINUX_O_CREAT | LINUX_O_EXCL | LINUX_O_TRUNC), mode);
+			if (ret < 0)
+				ret = errno_linux_to_bsd(ret);
+			else if (linux_flags & LINUX_O_PATH)
+				ret = reopen_non_symlink(ret, linux_flags);
+		}
+	}
 
 	return ret;
 }

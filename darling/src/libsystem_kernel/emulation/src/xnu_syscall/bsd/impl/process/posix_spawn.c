@@ -1,4 +1,5 @@
 #include <darling/emulation/xnu_syscall/bsd/impl/process/posix_spawn.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/misc/dataless.h> // x86Sim
 
 #include <stddef.h>
 #include <stdint.h>
@@ -77,6 +78,20 @@ struct spawn_port_action
 };
 
 void x86sim_jetsam_spawned(int priority); // x86Sim: process/memorystatus.c
+
+// x86Sim: posix_spawnattr_setdataless_iopolicy_np (simcompat): newer XNU keeps the policy in the attributes; this one's
+// struct has no field for it, so it rides in the unused psa_reserved's upper half (policy + 1; 0 = not set). The child
+// applies it (iopolicysys.c x86sim_dataless_spawned) before it execs.
+#define X86SIM_PSA_DATALESS_SHIFT 32
+int x86sim_spawnattr_set_dataless(void* psattrp, int policy)
+{
+	struct xnu__posix_spawnattr** pa = psattrp;
+	if (pa == NULL || *pa == NULL || policy < 0 || policy > 2)
+		return 22; // EINVAL
+	(*pa)->psa_reserved = ((*pa)->psa_reserved & ~((uint64_t) 0xf << X86SIM_PSA_DATALESS_SHIFT))
+		| ((uint64_t) (policy + 1) << X86SIM_PSA_DATALESS_SHIFT);
+	return 0;
+}
 
 struct spawn_port_actions
 {
@@ -197,6 +212,9 @@ no_fork:
 			// x86Sim (RAM 2): the jetsam band launchd gave the job (process/memorystatus.c, for jetsam.py)
 			if (desc->attrp->psa_jetsam_flags & XNU_POSIX_SPAWN_JETSAM_SET)
 				x86sim_jetsam_spawned(desc->attrp->psa_priority);
+			// x86Sim: posix_spawnattr_setdataless_iopolicy_np's policy (helper/misc/dataless.c)
+			if ((desc->attrp->psa_reserved >> X86SIM_PSA_DATALESS_SHIFT) & 0xf)
+				x86sim_dataless_spawned((int) ((desc->attrp->psa_reserved >> X86SIM_PSA_DATALESS_SHIFT) & 0xf) - 1);
 			if (desc->attrp->psa_flags & POSIX_SPAWN_RESETIDS)
 			{
 				sys_setgid(sys_getgid());
