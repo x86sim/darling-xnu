@@ -121,6 +121,9 @@
 #define VOL_CAP_FMT_FAST_STATFS     0x00000400
 #define VOL_CAP_FMT_2TB_FILESIZE    0x00000800
 #define VOL_CAP_FMT_64BIT_OBJECT_IDS 0x00020000
+#define VOL_CAP_FMT_DOCUMENT_ID     0x00080000
+#define VOL_CAP_FMT_WRITE_GENERATION_COUNT 0x00100000
+#define VOL_CAP_INT_CLONE           0x00010000
 #define VOL_CAP_INT_ATTRLIST        0x00000002
 #define VOL_CAP_INT_ADVLOCK         0x00000100
 #define VOL_CAP_INT_FLOCK           0x00000200
@@ -710,9 +713,17 @@ struct xnu_attrlist* alist, void *attributeBuffer, __SIZE_TYPE__ bufferSize, uns
 		uint32_t caps[8] = { 0 };
 		caps[VOL_CAPABILITIES_FORMAT] = VOL_CAP_FMT_PERSISTENTOBJECTIDS | VOL_CAP_FMT_PATH_FROM_ID | VOL_CAP_FMT_SYMBOLICLINKS | VOL_CAP_FMT_HARDLINKS
 			| VOL_CAP_FMT_SPARSE_FILES | VOL_CAP_FMT_CASE_SENSITIVE | VOL_CAP_FMT_CASE_PRESERVING
-			| VOL_CAP_FMT_FAST_STATFS | VOL_CAP_FMT_2TB_FILESIZE | VOL_CAP_FMT_64BIT_OBJECT_IDS;
+			| VOL_CAP_FMT_FAST_STATFS | VOL_CAP_FMT_2TB_FILESIZE | VOL_CAP_FMT_64BIT_OBJECT_IDS
+		// x86Sim: document ids (ATTR_CMN_DOCUMENT_ID of a UF_TRACKED item), write generation counts
+		// (ATTR_CMN_GEN_COUNT) and clones (clonefileat, impl/misc/clonefile.c) are answered as APFS, the only file
+		// system the simulator runs on, has them. File Provider's -[FPFSVolume setupForPath:error:] refuses a volume
+		// without DOCUMENT_ID | WRITE_GENERATION_COUNT and CLONE | RENAME_EXCL (ENODEV): fileproviderd disabled every
+		// replicated domain ("cannot initialize database ... POSIX 19"), so no NSFileProviderReplicatedExtension ran
+		// (tests/apps/sdkcov func:FileProvider.replicated-extension-domain).
+			| VOL_CAP_FMT_DOCUMENT_ID | VOL_CAP_FMT_WRITE_GENERATION_COUNT;
 		caps[VOL_CAPABILITIES_INTERFACES] = VOL_CAP_INT_ATTRLIST | VOL_CAP_INT_ADVLOCK | VOL_CAP_INT_FLOCK
-			| VOL_CAP_INT_USERACCESS | VOL_CAP_INT_EXTENDED_ATTR | VOL_CAP_INT_RENAME_SWAP | VOL_CAP_INT_RENAME_EXCL;
+			| VOL_CAP_INT_USERACCESS | VOL_CAP_INT_EXTENDED_ATTR | VOL_CAP_INT_RENAME_SWAP | VOL_CAP_INT_RENAME_EXCL
+			| VOL_CAP_INT_CLONE;
 		// valid[]: every capability bit is answered
 		caps[4] = caps[5] = 0xFFFFFFFF;
 		getattr_put(&p, caps, sizeof(caps));
