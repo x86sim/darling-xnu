@@ -196,7 +196,9 @@ sysctl_handler(handle_ostype)
 
 // The iOS simulator runtime refuses to start on hosts older than macOS 14
 // (Darwin 23). Report a macOS 26 kernel to processes on a foreign libSystem.
-#define FOREIGN_LIBSYSTEM_RELEASE "25.0.0"
+// x86Sim sdkcov P9: the 27.2 runtimes' reference host, macOS 27.0, reports kern.osrelease 27.0.0 (with
+// kern.osversion 26A428 and kern.osproductversion 27.0 below).
+#define FOREIGN_LIBSYSTEM_RELEASE "27.0.0"
 
 #ifndef VARIANT_DYLD
 extern bool darling_foreign_libsystem(void);
@@ -259,9 +261,15 @@ sysctl_handler(handle_version)
 	return 0;
 }
 
+// x86Sim: kern.osversion of a simulator process is the host's build too, as kern.osproductversion below (26A428:
+// macOS 27.0, the reference Mac's). FoundationModels' minimumMacOSVersionForSimulatorSupport reads it: with Darling's
+// "20G1120" (macOS 11) a watchOS LanguageModelSession on the Private Cloud Compute model failed "Host is not running
+// macOS 27." where Apple's watchOS 27.2 simulator answers "This device does not support Apple Intelligence."
+#define X86SIM_SIM_HOST_OSVERSION "26A428"
+static int x86sim_simulator_process(void);
 sysctl_handler(handle_osversion)
 {
-	const char* s = EMULATED_OSVERSION;
+	const char* s = x86sim_simulator_process() ? X86SIM_SIM_HOST_OSVERSION : EMULATED_OSVERSION;
 
 	copyout_string(s, (char*) old, oldlen);
 	return 0;
@@ -404,10 +412,12 @@ sysctl_handler(handle_usrstack64)
 // uses its host service (com.apple.FileProvider.sim2host: open by id, mkdirat, ...) only for a host of macOS 15 or
 // later, and failed every such call with ENOSYS for our "11.7.4" (Files could not open a document). iOS 26.5
 // simulators run on macOS 26; spike3/fpsim2host stands in for that host service. Other processes keep Darling's.
-#define X86SIM_SIM_HOST_OSPRODUCTVERSION "26.4"
+// 27.0 (sdkcov P9): the 27.2 simulator runtimes' reference host (Xcode 27.2's Mac) runs macOS 27.0 (build 26A428,
+// kern.osversion above).
+#define X86SIM_SIM_HOST_OSPRODUCTVERSION "27.0"
 uint32_t _proc_platform(int32_t pid);
 extern long sys_getpid(void);
-static sysctl_handler(handle_osproductversion) {
+static int x86sim_simulator_process(void) {
 	static int simulator = -1;
 	if (simulator < 0) {
 		// x86Sim Platforms 1: tvOS and watchOS simulator processes too (PLATFORM_TVOSSIMULATOR 8, WATCHOSSIMULATOR 9);
@@ -415,7 +425,10 @@ static sysctl_handler(handle_osproductversion) {
 		uint32_t p = _proc_platform(sys_getpid());
 		simulator = p == 7 /* PLATFORM_IOSSIMULATOR */ || p == 8 || p == 9 || p == 12;
 	}
-	copyout_string(simulator ? X86SIM_SIM_HOST_OSPRODUCTVERSION : EMULATED_OSPRODUCTVERSION, (char*)old, oldlen);
+	return simulator;
+}
+static sysctl_handler(handle_osproductversion) {
+	copyout_string(x86sim_simulator_process() ? X86SIM_SIM_HOST_OSPRODUCTVERSION : EMULATED_OSPRODUCTVERSION, (char*)old, oldlen);
 	return 0;
 };
 
