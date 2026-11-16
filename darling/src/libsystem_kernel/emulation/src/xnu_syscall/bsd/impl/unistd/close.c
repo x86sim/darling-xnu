@@ -11,6 +11,7 @@
 #include <darling/emulation/linux_premigration/ext/for-libkqueue.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/network/socktables.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/network/sockextra.h>
+#include <darling/emulation/xnu_syscall/bsd/impl/select/select.h>
 
 __attribute__((weak))
 __attribute__((visibility("default")))
@@ -53,6 +54,7 @@ long sys_close_nocancel(int fd)
 
 	socket_tables_close(fd);
 	sockextra_closed(fd); // x86Sim
+	select_fd_closed(fd); // x86Sim: wakes a select() watching it (select.c)
 
 	ret = LINUX_SYSCALL1(__NR_close, fd);
 	if (ret < 0)
