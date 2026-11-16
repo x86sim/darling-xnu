@@ -60,4 +60,9 @@ void route_socket_dup(int fd, int copy);
 // In the child of a fork, before it runs anything else.
 void route_atfork_child(void);
 
+// x86Sim: NET_RT_DUMP (XNU's sysctl_rtsock() / sysctl_dumpentry()): an RTM_GET message for each route of family af (0:
+// IPv4 and IPv6) in Linux's main table. With old NULL, *oldlen is set to the size needed; otherwise the messages that
+// fit go into old and *oldlen is set to their size (-ENOMEM if not all fit).
+long route_dump(int af, void* old, unsigned long* oldlen);
+
 #endif // NETWORK_ROUTE_H

@@ -3,6 +3,7 @@
 #include <sys/errno.h>
 
 #include <darling/emulation/xnu_syscall/bsd/helper/network/ifinfo.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/network/route.h>
 
 static sysctl_handler(handle_route);
 
@@ -11,6 +12,7 @@ enum {
 };
 
 enum {
+	_NET_RT_DUMP = 1,
 	_NET_RT_IFLIST = 3,
 };
 
@@ -29,6 +31,9 @@ static sysctl_handler(handle_route) {
 	switch (name[4]) {
 		case _NET_RT_IFLIST:
 			return ifinfo_iflist(name[3], name[5], old, oldlen);
+		// x86Sim: the routing table (route.h)
+		case _NET_RT_DUMP:
+			return route_dump(name[3], old, oldlen);
 		default:
 			return -EINVAL;
 	}

@@ -740,6 +740,139 @@ static long answer_get(const struct rt_msghdr* req, const struct sockaddr* dst, 
 	return rtm->rtm_msglen;
 }
 
+// ---- NET_RT_DUMP: the routing table
+
+// x86Sim: XNU's sysctl_dumpentry() for each route of Linux's main table (unicast routes through an interface Darwin can
+// name): an RTM_GET message with the route's flags, interface, DST, GATEWAY (the next hop, or the interface's link
+// address for a directly connected route) and NETMASK (none for a host route), as answer_get() describes an RTM_GET's
+// route. AVConference's ICE (MultipeerConnectivity's GCKSession, FaceTime) takes the interfaces it may use from here:
+// those with a default route. With EINVAL it found none but the loopback, ignores that one, and an MCSession
+// invitation went out without connection data: the inviter stayed connecting, then not connected.
+#define ROUTE_DUMP_MAX 512
+
+struct dump_walk {
+	int alen;
+	int count;
+	struct rt_entry* routes;
+};
+
+static int got_dump_route(const struct linux_nlmsghdr* msg, void* context)
+{
+	struct dump_walk* walk = context;
+	struct rt_entry e;
+
+	if (parse_route(msg, walk->alen, &e) < 0)
+		return 0;
+	if (e.type != LINUX_RTN_UNICAST || e.table != LINUX_RT_TABLE_MAIN || e.oif <= 0 || e.oif > IFINFO_MAX_INDEX)
+		return 0;
+	if (e.dst_len > walk->alen * 8 || walk->count >= ROUTE_DUMP_MAX)
+		return 0;
+	walk->routes[walk->count++] = e;
+	return 0;
+}
+
+struct route_dump_out {
+	char* old;
+	unsigned long size, used, total;
+	int truncated;
+};
+
+static void dump_put(struct route_dump_out* out, const void* msg, unsigned long len)
+{
+	out->total += len;
+	if (!out->old || out->truncated)
+		return;
+	if (out->used + len > out->size) {
+		out->truncated = 1;
+		return;
+	}
+	memcpy(out->old + out->used, msg, len);
+	out->used += len;
+}
+
+static int dump_family(int nl, int family, struct rt_entry* routes, struct route_dump_out* out)
+{
+	struct {
+		struct linux_nlmsghdr h;
+		struct linux_rtmsg r;
+	} req = {
+		.h = { .nlmsg_len = sizeof(req), .nlmsg_type = LINUX_RTM_GETROUTE,
+			.nlmsg_flags = LINUX_NLM_F_REQUEST | LINUX_NLM_F_DUMP },
+		.r = { .rtm_family = family == AF_INET ? LINUX_AF_INET : LINUX_AF_INET6 },
+	};
+	int alen = family == AF_INET ? 4 : 16;
+	struct dump_walk walk = { .alen = alen, .routes = routes };
+	int ret = rtnl_talk(nl, &req.h, got_dump_route, &walk);
+	if (ret < 0)
+		return ret;
+
+	for (int i = 0; i < walk.count; i++) {
+		const struct rt_entry* e = &routes[i];
+		struct ifinfo link;
+		if (ifinfo_get(nl, e->oif, &link) < 0)
+			continue; // gone since the dump
+		struct route_answer ans = { .family = family, .prefix_len = e->dst_len, .ifindex = e->oif,
+			.type = e->type, .protocol = e->protocol, .has_gateway = e->has_gateway };
+		if (e->has_dst)
+			memcpy(ans.dst, e->dst, alen);
+		if (e->has_gateway)
+			memcpy(ans.gateway, e->gateway, alen);
+
+		union {
+			struct rt_msghdr rtm;
+			unsigned char bytes[ROUTE_REPLY_MAX];
+		} msg;
+		struct rt_msghdr* rtm = &msg.rtm;
+		unsigned char* p = msg.bytes + sizeof(*rtm);
+		memset(&msg, 0, sizeof(msg));
+		rtm->rtm_version = RTM_VERSION;
+		rtm->rtm_type = RTM_GET;
+		rtm->rtm_flags = route_flags(&ans) & ~RTF_DONE;
+		rtm->rtm_index = e->oif;
+		rtm->rtm_rmx.rmx_mtu = link.mtu;
+		rtm->rtm_addrs = RTA_DST | RTA_GATEWAY;
+		p += put_inet(p, family, ans.dst, ans.ifindex);
+		if (ans.has_gateway)
+			p += put_inet(p, family, ans.gateway, ans.ifindex);
+		else
+			p += ROUNDUP32(ifinfo_link_sockaddr(&link, (void*) p, 128));
+		if (ans.prefix_len != alen * 8) {
+			rtm->rtm_addrs |= RTA_NETMASK;
+			p += put_mask(p, family, ans.prefix_len);
+		}
+		rtm->rtm_msglen = p - msg.bytes;
+		dump_put(out, &msg, rtm->rtm_msglen);
+	}
+	return 0;
+}
+
+long route_dump(int af, void* old, unsigned long* oldlen)
+{
+	static struct rt_entry routes[ROUTE_DUMP_MAX]; // under route_lock(): too large for a thread's stack
+	struct route_dump_out out = { .old = old, .size = old ? *oldlen : 0 };
+	int nl, ret = 0;
+	unsigned long long mask;
+
+	if (af != 0 && af != AF_INET && af != AF_INET6) {
+		*oldlen = 0; // no routing table of that family
+		return 0;
+	}
+	nl = rtnl_open();
+	if (nl < 0)
+		return nl;
+	mask = route_lock();
+	if (af == 0 || af == AF_INET)
+		ret = dump_family(nl, AF_INET, routes, &out);
+	if (ret >= 0 && (af == 0 || af == AF_INET6))
+		ret = dump_family(nl, AF_INET6, routes, &out);
+	route_unlock(mask);
+	rtnl_close(nl);
+	if (ret < 0)
+		return ret;
+	*oldlen = old ? out.used : out.total;
+	return out.truncated ? -ENOMEM : 0;
+}
+
 // ---- route_output()
 
 // XNU's rt_xaddrs(): the addresses after the header, in RTA_* bit order, each copied into storage (so a short one
