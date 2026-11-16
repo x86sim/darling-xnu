@@ -1,5 +1,6 @@
 #include <darling/emulation/xnu_syscall/bsd/impl/misc/getrlimit.h>
 
+#include <stddef.h>
 #include <sys/errno.h>
 
 #include <darling/emulation/common/base.h>
@@ -16,13 +17,21 @@ long sys_getrlimit(unsigned int which, struct xnu_rlimit* rlp)
 
 	ret = LINUX_SYSCALL(__NR_prlimit64, 0, which, 0, rlp);
 	if (ret < 0)
-		ret = errno_linux_to_bsd(ret);
+		return errno_linux_to_bsd(ret);
+
+	if (rlp == NULL)
+		return ret;
 
 	if (which == LINUX_RLIMIT_NOFILE)
 	{
 		rlp->rlim_cur--;
 		rlp->rlim_max--;
 	}
+
+	// Linux's RLIM_INFINITY (~0) never equals Darwin's, and a guest casting it to int64_t sees -1 (Chromium's
+	// gin::IsolateHolder checked_cast traps on it).
+	rlp->rlim_cur = rlim_linux_to_bsd(rlp->rlim_cur);
+	rlp->rlim_max = rlim_linux_to_bsd(rlp->rlim_max);
 
 	return ret;
 }
