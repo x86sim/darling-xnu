@@ -501,3 +501,31 @@ long sys_csops_audittoken(int pid, unsigned int ops, void* useraddr, size_t user
 	// the audit token names the same process (val[5] is its pid)
 	return sys_csops(pid, ops, useraddr, usersize);
 }
+
+// From upstream Darling (its csops answers from darlingserver's code signing state; x86Sim keeps the in-process
+// signature reader above, which also knows the simulator's __TEXT,__entitlements sections). Used by fcntl's
+// F_CHECK_LV and for-sandbox.
+#include <darling/emulation/conversion/errno.h>
+
+int cs_get_state(int pid, dserver_cs_state_t* state) {
+	int ret = dserver_rpc_cs_get_state(pid, state, sizeof(*state));
+	if (ret < 0)
+		return errno_linux_to_bsd(ret);
+	return 0;
+}
+
+uint32_t cs_own_policy(void) {
+	// the policy plus one; 0 means it has not been asked for yet
+	static uint32_t cached = 0;
+	uint32_t value = __atomic_load_n(&cached, __ATOMIC_RELAXED);
+
+	if (value == 0) {
+		dserver_cs_state_t state;
+		if (cs_get_state(0, &state) != 0)
+			return dserver_code_signing_policy_off;
+		value = state.code_signing_policy + 1;
+		__atomic_store_n(&cached, value, __ATOMIC_RELAXED);
+	}
+
+	return value - 1;
+}

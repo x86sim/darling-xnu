@@ -14,6 +14,9 @@ extern int strncmp(const char* s1, const char* s2, __SIZE_TYPE__ n); // x86Sim
 #include <darling/emulation/common/simple.h>
 #include <darling/emulation/conversion/dirent/getdirentries.h>
 #include <darling/emulation/conversion/fcntl/open.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/misc/readline.h>
+#include <darling/emulation/linux_premigration/elfcalls_wrapper.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/misc/host_platform.h>
 
 #include <darlingserver/rpc.h>
 
@@ -39,6 +42,10 @@ extern __SIZE_TYPE__ strlen(const char* ptr);
 extern char* strcpy(char* dst, const char* src);
 extern void* memset(void*, int, __SIZE_TYPE__);
 extern void* memcpy(void* dest, const void*, __SIZE_TYPE__);
+extern int strncmp(const char* str1, const char* str2, __SIZE_TYPE__ num);
+
+// glibc bits/confname.h
+#define _SC_CLK_TCK 2
 extern char *strncpy(char *dest, const char *src, __SIZE_TYPE__ n);
 extern char *strrchr(const char *s, int c);
 
@@ -52,14 +59,38 @@ int _sysctl_proc(int what, int flag, struct kinfo_proc* out, unsigned long* bufl
 
 	if (buflen == NULL)
 		return -EFAULT;
-	if (*buflen > 0 && out == NULL)
-		return -EFAULT;
 
 	fd = sys_open_nocancel("/proc", BSD_O_RDONLY | BSD_O_DIRECTORY, 0);
+	if (fd >= 0)
+	{
+		ret = sys_getdirentries(fd, (char*) dents, sizeof(dents), &basep);
+		if (ret <= 0 && host_platform_is_android())
+		{
+			// QUIRK: on Android the guest's /proc can be empty or unreadable
+			// while the host's procfs, mounted at /Volumes/SystemRoot/proc,
+			// lists the processes, so the process list is read from there.
+			// Evidence: contributor observation on Android (tier 2, not
+			// reproduced by us). Not active on other hosts, where an empty
+			// /proc is a legitimate answer and the host's processes must not
+			// leak into the guest's list. Test: none off Android.
+			close_internal(fd);
+			fd = -1;
+		}
+	}
+
+	if (fd < 0 && host_platform_is_android())
+	{
+		fd = sys_open_nocancel("/Volumes/SystemRoot/proc", BSD_O_RDONLY | BSD_O_DIRECTORY, 0);
+		if (fd >= 0)
+		{
+			basep = 0;
+			ret = sys_getdirentries(fd, (char*) dents, sizeof(dents), &basep);
+		}
+	}
 	if (fd < 0)
 		return fd;
 
-	while ((ret = sys_getdirentries(fd, (char*) dents, sizeof(dents), &basep)) > 0)
+	while (ret > 0)
 	{
 		int pos = 0;
 		
@@ -70,6 +101,14 @@ int _sysctl_proc(int what, int flag, struct kinfo_proc* out, unsigned long* bufl
 			// __simple_printf("Looking at %s\n", dent->d_name);
 
 			if (dent->d_type != DT_DIR || !isdigit(dent->d_name[0]))
+			{
+				pos += dent->d_reclen;
+				continue;
+			}
+
+			int pid = __simple_atoi(dent->d_name, NULL);
+			bool is_64_bit;
+			if (dserver_rpc_task_is_64_bit(pid, &is_64_bit) < 0)
 			{
 				pos += dent->d_reclen;
 				continue;
@@ -97,12 +136,13 @@ int _sysctl_proc(int what, int flag, struct kinfo_proc* out, unsigned long* bufl
 
 			pos += dent->d_reclen;
 		}
+		ret = sys_getdirentries(fd, (char*) dents, sizeof(dents), &basep);
 	}
 
-	if (*buflen < nproc*sizeof(struct kinfo_proc))
+	if (out == NULL || *buflen < nproc*sizeof(struct kinfo_proc))
 	{
 		*buflen = nproc*sizeof(struct kinfo_proc);
-		ret = out ? -ENOSPC : 0;
+		ret = out ? -ENOMEM : 0;
 	}
 	else
 	{
@@ -112,7 +152,7 @@ int _sysctl_proc(int what, int flag, struct kinfo_proc* out, unsigned long* bufl
 		*buflen = nproc*sizeof(struct kinfo_proc);
 
 		next = first;
-		for (i = 0; next != NULL; i++)
+		for (i = 0; next != NULL && out != NULL; i++)
 		{
 			memcpy(&out[i], &next->kinfo, sizeof(struct kinfo_proc));
 			next = next->next;
@@ -130,11 +170,11 @@ bool read_string(const char* path, char* dst, int maxlen)
 {
 	int fd, rd;
 
-	fd = sys_open(path, BSD_O_RDONLY, 0);
+	fd = sys_open_nocancel(path, BSD_O_RDONLY, 0);
 	if (fd < 0)
 		return false;
 
-	rd = sys_read(fd, dst, maxlen-1);
+	rd = sys_read_nocancel(fd, dst, maxlen-1);
 	if (rd >= 0)
 		dst[rd] = '\0';
 
@@ -184,6 +224,9 @@ const char* next_stat_elem(char** buf)
 	if (buf == NULL || *buf == NULL)
 		return NULL;
 
+	if (!buf || !*buf)
+		return NULL;
+
 	start = *buf;
 
 	if (!*start)
@@ -192,28 +235,36 @@ const char* next_stat_elem(char** buf)
 	{
 		start++;
 		end = strrchr(start, ')');
-		if (end == NULL)
+		if (!end)
 		{
 			*buf = start + strlen(start);
 			return NULL;
 		}
-		*end++ = '\0';
-		if (*end == ' ')
+
+		*end = '\0';
+		end++;
+		if (*end != '\0' && *end == ' ')
 			end++;
 		*buf = end;
+		return start;
 	}
 	else
 	{
 		end = start;
-		while (*end != ' ' && *end)
+		while (*end != ' ' && *end != '\0')
 			end++;
-		if (*end)
-			*end++ = '\0';
-		*buf = end;
-	}
 
-	// __simple_printf("Next stat elem: %s\n", start);
-	return start;
+		if (*end == ' ')
+		{
+			*end = '\0';
+			*buf = end + 1;
+		}
+		else
+		{
+			*buf = end;
+		}
+		return start;
+	}
 }
 
 void skip_stat_elems(char** buf, int count)
@@ -221,6 +272,41 @@ void skip_stat_elems(char** buf, int count)
 	int i;
 	for (i = 0; i < count; i++)
 		next_stat_elem(buf);
+}
+
+bool proc_start_time(uint64_t starttime, uint64_t* sec, uint64_t* usec)
+{
+	struct rdline_buffer rbuf;
+	int statfd = sys_open_nocancel("/proc/stat", BSD_O_RDONLY, 0);
+
+	if (statfd < 0)
+		return false;
+
+	_readline_init(&rbuf);
+
+	uint64_t btime;
+	const char* line = NULL;
+
+	while ((line = _readline(statfd, &rbuf)) != NULL)
+	{
+		if (strncmp(line, "btime ", 6) == 0)
+		{
+			line += 6;
+			btime = __simple_atoi(line, NULL);
+			break;
+		}
+	}
+
+	close_internal(statfd);
+
+	// if we see `line == NULL`, we didn't break out early, so we didn't see "btime"
+	if (line == NULL)
+		return false;
+
+	long ticks_per_sec = native_sysconf(_SC_CLK_TCK);
+	*sec = btime + starttime / ticks_per_sec;
+	*usec = (starttime % ticks_per_sec) * 1000000 / ticks_per_sec;
+	return true;
 }
 
 static struct kinfo_proc_chain* load_proc(const char* name, int what, int flag)
@@ -241,7 +327,7 @@ static struct kinfo_proc_chain* load_proc(const char* name, int what, int flag)
 
 	bool is_64_bit;
 	if (dserver_rpc_task_is_64_bit(kinfo->kinfo.kp_proc.p_pid, &is_64_bit) < 0) {
-		is_64_bit = false;
+		goto retnull;
 	}
 	if (is_64_bit)
 		kinfo->kinfo.kp_proc.p_flag |= P_LP64;
@@ -304,13 +390,23 @@ static struct kinfo_proc_chain* load_proc(const char* name, int what, int flag)
 	if (kinfo->kinfo.kp_eproc.e_tdev != 0)
 		kinfo->kinfo.kp_proc.p_flag |= P_CONTROLT;
 
-	skip_stat_elems(&statptr, 10); // tpgid flags minflt cminflt majflt cmajflt utime stime cutime cstime
+	skip_stat_elems(&statptr, 10);
 
 	READELEM();
 	kinfo->kinfo.kp_proc.p_priority = __simple_atoi(elem, NULL);
 
 	READELEM();
-	kinfo->kinfo.kp_proc.p_nice = __simple_atoi(elem, NULL);
+	kinfo->kinfo.kp_proc.p_nice = elem[0] == '-' ? -__simple_atoi(elem + 1, NULL) : __simple_atoi(elem, NULL);
+
+	skip_stat_elems(&statptr, 2);
+
+	READELEM();
+	uint64_t start_sec, start_usec;
+	if (proc_start_time(__simple_atoi(elem, NULL), &start_sec, &start_usec))
+	{
+		kinfo->kinfo.kp_proc.p_starttime.tv_sec = start_sec;
+		kinfo->kinfo.kp_proc.p_starttime.tv_usec = start_usec;
+	}
 
 	// In the container, everything is owned by us
 	if (uid == -1 || gid == -1)
@@ -380,6 +476,10 @@ static void free_chain(struct kinfo_proc_chain* chain)
 
 int _sysctl_procargs(int pid, char* buf, unsigned long* buflen)
 {
+	bool is_64_bit;
+	if (dserver_rpc_task_is_64_bit(pid, &is_64_bit) < 0)
+		return -ESRCH;
+
 	char path[56];
 	char cmdline[2048];
 	int argc = 0, i, arg0len = 0, argslen = 0;

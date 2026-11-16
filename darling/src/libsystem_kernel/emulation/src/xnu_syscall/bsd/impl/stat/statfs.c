@@ -22,12 +22,14 @@ extern int strncmp(const char* s1, const char* s2, __SIZE_TYPE__ len);
 
 long sys_statfs(const char* path, struct bsd_statfs* buf)
 {
-#ifdef __x86_64__
-	return sys_statfs64(path, (struct bsd_statfs64*) buf);
-#else
-#	warning Not implemented
+	// the legacy structure (upstream Darling: every architecture has one, with the long fields of its own width)
+	struct bsd_statfs64 wide;
+	long ret = sys_statfs64(path, &wide);
+
+	if (ret < 0)
+		return ret;
+	statfs_bsd64_to_bsd(&wide, buf);
 	return 0;
-#endif
 }
 
 // x86Sim: shared by statfs/fstatfs/getfsstat. /proc/self/mounts lists Linux paths (octal-escaped,

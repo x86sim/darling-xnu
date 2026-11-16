@@ -7,7 +7,9 @@
 #include <sys/mman.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <errno.h>
 #include <mach/mach_init.h>
+#include <mach/vm_page_size.h>
 
 #include <darling/emulation/common/base.h>
 #include <darling/emulation/xnu_syscall/mach/impl/mach_traps.h>

@@ -11,7 +11,21 @@ Lentry_hook:
 	movq	(%r10,%rax,8), %r10
 	test	%r10, %r10
 	jz		.no_sys
+	# pipe() returns its second descriptor in %rdx (set in sys_pipe)
+	cmpq	$42, %rax
+	je		.keep_rdx
 	# Re-push possible 7th and 8th arg
+	movq	24(%rsp), %r11
+	pushq	%r11
+	movq	24(%rsp), %r11
+	pushq	%r11
+	call	*%r10
+	addq	$16, %rsp
+	# XNU returns a second result in %rdx; it is zero for every syscall but
+	# pipe(), so don't leak the last argument register to the caller
+	xorl	%edx, %edx
+	jmp		.std_ret
+.keep_rdx:
 	movq	24(%rsp), %r11
 	pushq	%r11
 	movq	24(%rsp), %r11
@@ -37,22 +51,33 @@ __darling_bsd_syscall_exit:
 
 #elif defined(__i386__)
 
+#include <darling/emulation/xnu_syscall/bsd/bsd_syscall_table.h>
+
+// Darwin's i386 syscall entries preserve every register except %eax and %edx
+// (the result) - libplatform's setjmp relies on %ecx surviving ___sigaltstack -
+// so the table lookup and the argument copy use %edx as scratch, and %ecx is
+// saved across the call to the handler.
 #define copy_arg(off) \
-	movl	8+off(%esp), %ecx ;\
-	movl	%ecx, -56+off(%esp)
+	movl	8+off(%esp), %edx ;\
+	movl	%edx, -72+off(%esp)
 
 __darling_bsd_syscall:
 Lentry_hook:
 	.space 7, 0x90
 	calll	1f
 1:
-	popl	%ecx
+	popl	%edx
 2:
-	movl	L___bsd_syscall_table$non_lazy_ptr-1b(%ecx), %ecx
+	movl	L___bsd_syscall_table$non_lazy_ptr-1b(%edx), %edx
 	andl	$0xffff, %eax // Because there is some extra stuff in upper bytes we don't need
-	movl	(%ecx,%eax,4), %eax
-	test	%eax, %eax
+	// The masked number can be up to 65535: check it against the table size
+	// before the lookup, and keep it in %eax for .no_sys.
+	cmpl	$BSD_SYSCALL_TABLE_SIZE, %eax
+	jae		.no_sys
+	movl	(%edx,%eax,4), %edx
+	test	%edx, %edx
 	jz		.no_sys
+	movl	%edx, %eax
 	// Copy arguments
 	copy_arg(0)
 	copy_arg(4)
@@ -68,15 +93,17 @@ Lentry_hook:
 	copy_arg(44)
 	copy_arg(48)
 	copy_arg(52)
-	subl	$56, %esp
+	subl	$72, %esp
+	movl	%ecx, 56(%esp)
 	call	*%eax
-	addl	$56, %esp
+	movl	56(%esp), %ecx
+	addl	$72, %esp
 .std_ret:
 Lexit_hook:
 	.space 7, 0x90
 	ret
 .no_sys:
-	pushl	%ecx
+	pushl	%eax // the syscall number
 	call	___unknown_syscall
 	addl	$4, %esp
 	jmp .std_ret
@@ -95,6 +122,44 @@ __darling_bsd_syscall_exit:
 	.long Lexit_hook
 
 .subsections_via_symbols
+
+#elif defined(__aarch64__)
+
+__darling_bsd_syscall:
+	// Save fp/lr around the blr; otherwise ret returns to itself.
+	stp  x29, x30, [sp, #-16]!
+	mov  x29, sp
+Lentry_hook:
+	// NOP sled for xtrace hook (ARM64 NOP = 0xd503201f)
+	nop
+	nop
+	nop
+	nop
+	adrp x9, ___bsd_syscall_table@GOTPAGE
+	ldr  x9, [x9, ___bsd_syscall_table@GOTPAGEOFF]
+	ldr  x9, [x9, x16, lsl #3]    // table[syscall_nr * 8]
+	cbz  x9, .no_sys
+	blr  x9                        // call handler, args already in x0-x7
+.std_ret:
+Lexit_hook:
+	nop
+	nop
+	nop
+	nop
+	ldp  x29, x30, [sp], #16
+	ret
+.no_sys:
+	mov  x0, x16
+	bl   ___unknown_syscall
+	b    .std_ret
+
+.section        __DATA,__data
+.globl __darling_bsd_syscall_entry
+.globl __darling_bsd_syscall_exit
+__darling_bsd_syscall_entry:
+	.quad Lentry_hook
+__darling_bsd_syscall_exit:
+	.quad Lexit_hook
 
 #else
 #	error Missing assembly

@@ -7,7 +7,7 @@
 // sets UF_TRACKED on every item of the On My iPhone storage and trapped ("call to block failed with -1"), so Files
 // could open no document. Nothing acts on a flag (UF_IMMUTABLE doesn't stop writes); they are bookkeeping, as on a
 // file system that stores but doesn't enforce them. Symlinks can't have user xattrs on Linux: their flags are 0.
-// The attribute is hidden from listxattr (xattr_names.h).
+// The attribute is hidden from listxattr (xattr_utils.h).
 #include <stdint.h>
 #include <darling/emulation/common/simple.h>
 #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>

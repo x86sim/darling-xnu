@@ -11,7 +11,7 @@
 #include <darling/emulation/other/mach/lkm.h>
 #include <darling/emulation/linux_premigration/elfcalls_wrapper.h>
 #include <darling/emulation/common/simple.h>
-#include <darling/emulation/xnu_syscall/bsd/impl/signal/sigprocmask.h>
+#include <darling/emulation/conversion/signal/duct_signals.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/unistd/close.h>
 #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
 

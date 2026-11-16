@@ -83,8 +83,48 @@ _os_cpu_number(void)
 #endif
 	extern int __linux_syscall(int nr, ...);
 
+#if defined(__x86_64__)
+	// Linux stores (node << 12) | cpu in IA32_TSC_AUX, which RDTSCP returns
+	// without entering the kernel; the vDSO's getcpu() reads it the same way.
+	// It is used once a read agrees with getcpu() (a host kernel that does not
+	// use RDTSCP leaves IA32_TSC_AUX unset even when the CPU has it).
+	static int __darling_has_rdtscp = -1;
+	if (__builtin_expect(__darling_has_rdtscp < 0, 0)) {
+		unsigned int a, b, c, d;
+		int usable = 0;
+		int attempt;
+		__asm__ volatile ("cpuid" : "=a" (a), "=b" (b), "=c" (c), "=d" (d) : "a" (0x80000001), "c" (0));
+		(void) a; (void) b; (void) c;
+		if ((d >> 27) & 1) {
+			// a migration between the reads makes them disagree; try a few times
+			for (attempt = 0; attempt < 3; attempt++) {
+				unsigned int before = 0, after = 0, lo, hi, aux;
+				__linux_syscall(__NR_getcpu, &before, 0, 0, 0, 0, 0);
+				__asm__ volatile ("rdtscp" : "=a" (lo), "=d" (hi), "=c" (aux));
+				__linux_syscall(__NR_getcpu, &after, 0, 0, 0, 0, 0);
+				(void) lo; (void) hi;
+				if (before == after) {
+					usable = (aux & 0xfff) == before;
+					break;
+				}
+			}
+		}
+		__darling_has_rdtscp = usable;
+	}
+	if (__builtin_expect(__darling_has_rdtscp, 1)) {
+		unsigned int lo, hi, aux;
+		__asm__ volatile ("rdtscp" : "=a" (lo), "=d" (hi), "=c" (aux));
+		(void) lo; (void) hi;
+		return aux & 0xfff;
+	}
+#endif
+
 	unsigned int cpu_num = 0;
-	int status = __linux_syscall(__NR_getcpu, &cpu_num, 0, 0, 0, 0, 0);
+	/* __linux_syscall is defined with six longs, not variadic: on arm64 Darwin
+	 * a variadic call passes them on the stack, where it never looks, and the
+	 * kernel sees garbage (getcpu then fails with EFAULT on every call). */
+	int status = ((int (*)(int, long, long, long, long, long, long))__linux_syscall)(
+		__NR_getcpu, (long)&cpu_num, 0, 0, 0, 0, 0);
 	// should we even check? i don't think it's possible for it to fail with these arguments
 	if (status < 0) {
 		return 0; // i guess?
@@ -153,6 +193,26 @@ _os_tsd_set_direct(unsigned long slot, void *val)
 
 #elif defined(__arm__) || defined(__arm64__)
 
+#if defined(DARLING) && defined(__arm64__)
+/* On Linux/aarch64, TPIDRRO_EL0 is owned by Linux pthread, not Darwin TSD.
+ * Phase 3 stores the Darwin TSD base in a tid-keyed hash table accessed via
+ * sys_thread_get_tsd_base(). Use that instead of the hardware register. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+extern void* sys_thread_get_tsd_base(void);
+#ifdef __cplusplus
+}
+#endif
+
+__attribute__((always_inline))
+static __inline__ void**
+_os_tsd_get_base(void)
+{
+	return (void**)sys_thread_get_tsd_base();
+}
+#define _os_tsd_get_base()  _os_tsd_get_base()
+#else
 __attribute__((always_inline, pure))
 static __inline__ void**
 _os_tsd_get_base(void)
@@ -172,6 +232,7 @@ _os_tsd_get_base(void)
 	return (void**)(uintptr_t)tsd;
 }
 #define _os_tsd_get_base()  _os_tsd_get_base()
+#endif /* DARLING && __arm64__ */
 
 #else
 #error _os_tsd_get_base not implemented on this architecture
@@ -239,10 +300,22 @@ _os_ptr_munge(uintptr_t ptr)
 
 #elif defined(__arm64__)
 
+#if defined(DARLING)
+/* On Linux/aarch64, TPIDRRO_EL0 is owned by the kernel (returns 0 to user
+ * mode), and TPIDR_EL0 belongs to glibc's pthread, not Darwin TSD. The C-side
+ * Darwin TSD lookup uses a tid-keyed hash table (see tls.c) which we cannot
+ * cheaply call from asm. Disable PTR_MUNGE here by using a zero token —
+ * XOR-with-zero is the identity transform, so setjmp/longjmp still match,
+ * we just lose the obfuscation hardening. The same change is required for
+ * any other asm site using _OS_PTR_MUNGE on darling arm64. */
+#define _OS_PTR_MUNGE_TOKEN(_reg, _token) \
+	mov	_token, #0
+#else
 #define _OS_PTR_MUNGE_TOKEN(_reg, _token) \
 	mrs _reg, TPIDRRO_EL0 %% \
 	and	_reg, _reg, #~0x7 %% \
 	ldr	_token, [ _reg,  #_OS_TSD_OFFSET(__TSD_PTR_MUNGE) ]
+#endif // DARLING
 
 #endif // defined(__arm64__)
 

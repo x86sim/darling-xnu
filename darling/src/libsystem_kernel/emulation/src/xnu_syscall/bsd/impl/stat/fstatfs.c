@@ -22,12 +22,14 @@ extern int sprintf(char *str, const char *format, ...);
 
 long sys_fstatfs(int fd, struct bsd_statfs* buf)
 {
-#ifdef __x86_64__
-	return sys_fstatfs64(fd, (struct bsd_statfs64*) buf);
-#else
-#	warning Not implemented
+	// the legacy structure (as sys_statfs)
+	struct bsd_statfs64 wide;
+	long ret = sys_fstatfs64(fd, &wide);
+
+	if (ret < 0)
+		return ret;
+	statfs_bsd64_to_bsd(&wide, buf);
 	return 0;
-#endif
 }
 
 long sys_fstatfs64(int fd, struct bsd_statfs64* buf)

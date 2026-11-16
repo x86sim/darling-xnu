@@ -2,36 +2,38 @@
 
 #include <stddef.h>
 #include <sys/errno.h>
+#include <stddef.h>
 
 #include <darling/emulation/common/base.h>
 #include <darling/emulation/conversion/errno.h>
 #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/misc/nofile_limit.h>
 
 long sys_getrlimit(unsigned int which, struct xnu_rlimit* rlp)
 {
 	int ret;
 
-	which = rlimit_bsd_to_linux(which);
-	if (which == -1)
+	int lwhich = (int)rlimit_bsd_to_linux(which);
+	if (lwhich < 0)
 		return -EINVAL;
 
-	ret = LINUX_SYSCALL(__NR_prlimit64, 0, which, 0, rlp);
+	// Linux accepts a NULL old-limit pointer; Darwin fails the copyout.
+	if (rlp == NULL)
+		return -EFAULT;
+
+	// Kept apart from the Linux limit, see nofile_limit.c. It is never
+	// reported above OPEN_MAX: Darwin programs size descriptor loops and
+	// tables by it.
+	if (lwhich == LINUX_RLIMIT_NOFILE)
+		return nofile_limit_get(rlp);
+
+	ret = LINUX_SYSCALL(__NR_prlimit64, 0, (unsigned int)lwhich, 0, rlp);
 	if (ret < 0)
 		return errno_linux_to_bsd(ret);
 
-	if (rlp == NULL)
-		return ret;
-
-	if (which == LINUX_RLIMIT_NOFILE)
-	{
-		rlp->rlim_cur--;
-		rlp->rlim_max--;
-	}
-
-	// Linux's RLIM_INFINITY (~0) never equals Darwin's, and a guest casting it to int64_t sees -1 (Chromium's
-	// gin::IsolateHolder checked_cast traps on it).
 	rlp->rlim_cur = rlim_linux_to_bsd(rlp->rlim_cur);
 	rlp->rlim_max = rlim_linux_to_bsd(rlp->rlim_max);
+
 
 	return ret;
 }

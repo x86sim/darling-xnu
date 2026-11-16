@@ -7,7 +7,7 @@
 #include <darling/emulation/conversion/errno.h>
 #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
 
-#define min(a,b) ((a) < (b)) ? (a) : (b)
+#define min(a,b) (((a) < (b)) ? (a) : (b))
 
 long sys_getdtablesize(void)
 {
@@ -18,5 +18,5 @@ long sys_getdtablesize(void)
 	if (ret < 0)
 		return ret;
 
-	return min(lim.rlim_cur, INT_MAX);
+	return min(lim.rlim_cur, DARWIN_OPEN_MAX);
 }

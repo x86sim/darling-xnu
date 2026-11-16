@@ -17,6 +17,11 @@
 #include <darling/emulation/xnu_syscall/bsd/impl/unistd/close.h>
 #include <darling/emulation/common/guarded/table.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/network/socktables.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/misc/nofile_limit.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/bpf/bpf_device.h>
+#include <darling/emulation/common/tsd.h>
+#include <darling/emulation/xnu_syscall/bsd/impl/bsdthread/bsdthread_register.h>
+#include <darling/emulation/xnu_syscall/bsd/impl/bsdthread/workq_kernreturn.h>
 
 #include <darlingserver/rpc.h>
 
@@ -52,12 +57,21 @@ static void kqueue_child_reset_all(void)
 		sim_kqueue_child_reset();
 }
 
+#if defined(__x86_64__) || defined(__i386__)
+// The ___fork stub reserves stack space of its own before it enters
+// __darling_bsd_syscall, so this function is not entered with the stack
+// alignment the ABI promises. The host libc's fork() may rely on it.
+__attribute__((force_align_arg_pointer))
+#endif
 long sys_fork(void)
 {
 	int ret;
 	int wdfd = get_perthread_wd();
 	kqueue_child_reset_resolve();
 
+	// x86Sim: the raw syscall, not upstream's native_fork() (the host libc's fork()): glibc's fork() needs glibc's
+	// thread pointer, which Darling threads do not keep (Darling hung at boot with it). mldr's own locks are reset in
+	// the child instead (__darling_elf_postfork_child below).
 #ifdef SYS_fork
 	ret = LINUX_SYSCALL(__NR_fork);
 #else
@@ -81,6 +95,8 @@ long sys_fork(void)
 		// x86Sim: willi/darling-xnu#7/#8: PF_ROUTE answering ends, held socket errors, SO_NOSIGPIPE flags and their locks
 		socket_tables_atfork_child();
 		ulock_atfork_child(); // x86Sim: no waiters in the child
+		nofile_limit_postfork_child();
+		bpf_device_postfork_child();
 
 		// create a new dserver RPC socket
 		__dserver_per_thread_socket_refresh();
@@ -104,6 +120,8 @@ long sys_fork(void)
 			__simple_printf("Failed to checkin with darlingserver after fork\n");
 			__simple_abort();
 		}
+		if (bsdthread_registered())
+			set_thread_handles(_pthread_getspecific_direct(_PTHREAD_TSD_SLOT_PTHREAD_SELF));
 		if (wdfd >= 0)
 			sys_fchdir(wdfd);
 

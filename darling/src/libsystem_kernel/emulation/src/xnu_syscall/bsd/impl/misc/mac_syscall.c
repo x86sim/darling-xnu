@@ -1,7 +1,7 @@
 // x86Sim: __mac_syscall (MAC policy calls: Sandbox, AMFI, ...). Darling has no MAC
 // policies. Nothing is sandboxed, so sandbox_check() (Sandbox call 2) answers
 // "allowed" like XNU does for an unsandboxed process; ENOSYS made daemons such as
-// cfprefsd refuse clients. Other calls are logged once and fail with ENOSYS.
+// cfprefsd refuse clients. Other calls fail as on macOS (see below).
 #define SANDBOX_CALL_CHECK 2
 // sandbox_container_path_for_pid/_audit_token (call 4) fails with ENOTSUP for a
 // process without a container, as observed in the iOS simulator on a Mac.
@@ -9,40 +9,42 @@
 // sandbox_passthrough_access (call 12) is how cfprefsd checks a client may write a
 // preferences directory; with no sandbox there is nothing to deny.
 #define SANDBOX_CALL_PASSTHROUGH_ACCESS 12
-#include <darling/emulation/common/simple.h>
-#include <stdint.h>
-#include <sys/errno.h>
+#include <darling/emulation/xnu_syscall/bsd/impl/misc/mac_syscall.h>
 
-extern int strcmp(const char* a, const char* b);
-extern unsigned long strlen(const char* s);
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+#include <sys/errno.h>
 
 long sys___mac_syscall(const char* policy, int call, void* arg)
 {
-	static struct { char policy[32]; int call; } seen[32];
-	static int nseen;
-	int i;
+	// the longest MAC policy name, NUL included (MAC_MAX_POLICY_NAME in <security/mac.h>)
+	char name[32];
+	size_t i;
 
-	if (policy == 0)
-		return -ENOSYS;
-	if (strcmp(policy, "Sandbox") == 0)
+	if (policy == NULL)
+		return -EFAULT;
+
+	for (i = 0; i < sizeof(name); i++) {
+		name[i] = policy[i];
+		if (name[i] == '\0')
+			break;
+	}
+	if (i == sizeof(name))
+		return -ENAMETOOLONG;
+
+	if (strcmp(name, "Sandbox") == 0)
 	{
 		if (call == SANDBOX_CALL_CHECK || call == SANDBOX_CALL_PASSTHROUGH_ACCESS)
 			return 0;
-		if (call == SANDBOX_CALL_CONTAINER_PATH)
-			return -ENOTSUP;
+		// QUIRK (upstream Darling, observed on macOS 27): the Sandbox policy fails a call it does not support with
+		// ENOTSUP (call 4 included), AMFI with ENOSYS, and an unknown policy name is ENOPOLICY.
+		return -ENOTSUP;
 	}
+	if (strcmp(name, "AMFI") == 0)
+		return -ENOSYS;
 
-	for (i = 0; i < nseen; i++)
-		if (seen[i].call == call && strcmp(seen[i].policy, policy) == 0)
-			return -ENOSYS;
-	if (nseen < 32 && strlen(policy) < sizeof(seen[0].policy))
-	{
-		__simple_sprintf(seen[nseen].policy, "%s", policy);
-		seen[nseen].call = call;
-		nseen++;
-	}
-	__simple_printf("__mac_syscall(%s, %d)\n", policy, call);
-	return -ENOSYS;
+	return -ENOPOLICY;
 }
 
 // x86Sim: persona (494). There are no personas; a simulator process on a Mac gets

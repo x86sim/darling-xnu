@@ -12,6 +12,8 @@
 #include <darling/emulation/xnu_syscall/bsd/helper/network/socktables.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/network/sockextra.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/select/select.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/bpf/bpf_device.h>
+#include <_libkernel_init.h>
 
 __attribute__((weak))
 __attribute__((visibility("default")))
@@ -47,6 +49,9 @@ long sys_close_nocancel(int fd)
 		return 0;
 	}
 
+	// x86Sim: the weak kqueue_close()/kqueue_closed_fd() above (libkqueue overrides them; the simulator's
+	// libkqueue_sim is reached by its foreign hook), not upstream's _libkernel_functions->kqueue_close: a foreign
+	// libSystem's table (version 5+, the iOS simulator's) has its own fields in the Darling-only slots
 	if (kqueue_close(fd)) {
 		// this FD belongs to libkqueue and it will take care of closing it
 		return 0;
@@ -55,6 +60,9 @@ long sys_close_nocancel(int fd)
 	socket_tables_close(fd);
 	sockextra_closed(fd); // x86Sim
 	select_fd_closed(fd); // x86Sim: wakes a select() watching it (select.c)
+	// Forget BPF device state first, so that a descriptor number reused by
+	// another thread right after the close is not taken for the device.
+	bpf_device_close(fd);
 
 	ret = LINUX_SYSCALL1(__NR_close, fd);
 	if (ret < 0)

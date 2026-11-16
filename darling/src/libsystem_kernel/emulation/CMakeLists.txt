@@ -6,12 +6,25 @@ enable_language(ASM)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu99 -fvisibility=hidden -fPIC -fno-builtin -ggdb -Wno-int-conversion -Wno-compare-distinct-pointer-types")
 set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -nostdlib")
 
+# The release this kernel emulates: macOS 26.4, build 25E246, Darwin 25.4.0.
+# kern.osrelease, kern.version, kern.osversion and kern.osproductversion are
+# answered from these values. They are also published as global properties so
+# that the superproject generates SystemVersion.plist from the same release
+# instead of repeating it.
+set(EMULATED_RELEASE "25.4.0")
+set(EMULATED_OSVERSION "25E246")
+set(EMULATED_OSPRODUCTVERSION "26.4")
+
+set_property(GLOBAL PROPERTY DARLING_KERNEL_RELEASE "${EMULATED_RELEASE}")
+set_property(GLOBAL PROPERTY DARLING_OS_BUILD_VERSION "${EMULATED_OSVERSION}")
+set_property(GLOBAL PROPERTY DARLING_OS_PRODUCT_VERSION "${EMULATED_OSPRODUCTVERSION}")
+
 add_definitions(-DBSDTHREAD_WRAP_LINUX_PTHREAD
 	-DEMULATED_SYSNAME="Darwin"
-	-DEMULATED_RELEASE="20.6.0"
-	-DEMULATED_VERSION="Darwin Kernel Version 20.6.0"
-	-DEMULATED_OSVERSION="20G1120"
-	-DEMULATED_OSPRODUCTVERSION="11.7.4"
+	-DEMULATED_RELEASE="${EMULATED_RELEASE}"
+	-DEMULATED_VERSION="Darwin Kernel Version ${EMULATED_RELEASE}"
+	-DEMULATED_OSVERSION="${EMULATED_OSVERSION}"
+	-DEMULATED_OSPRODUCTVERSION="${EMULATED_OSPRODUCTVERSION}"
 )
 
 # include src/startup for rtsig.h
@@ -40,6 +53,7 @@ set(common_sources
 
 set(conversion_sources
 	src/conversion/fcntl/open.c
+	src/conversion/network/cmsg.c
 	src/conversion/network/duct.c
 	src/conversion/network/getsockopt.c
 	src/conversion/network/recvmsg.c
@@ -59,11 +73,16 @@ set(linux_premigration_sources
 	src/linux_premigration/ext/epoll_wait.c
 	src/linux_premigration/ext/eventfd.c
 	src/linux_premigration/ext/eventfd_read.c
+	src/linux_premigration/ext/darling-nanosleep.c
 	src/linux_premigration/ext/eventfd_write.c
 	src/linux_premigration/ext/fanotify.c
 	src/linux_premigration/ext/file_handle.c
 	src/linux_premigration/ext/for-libelfloader.c
 	src/linux_premigration/ext/for-libkqueue.c
+	src/linux_premigration/ext/for-platform-identity.c
+	src/linux_premigration/ext/for-sandbox.c
+	src/linux_premigration/ext/for-sysconfig.c
+	src/linux_premigration/ext/host-pid.c
 	src/linux_premigration/ext/for-xtrace.c
 	src/linux_premigration/ext/futex.c
 	src/linux_premigration/ext/inotify_add_watch.c
@@ -93,6 +112,11 @@ set(xnu_syscall_bsd_sources
 	src/xnu_syscall/bsd/bsd_syscall_table.c
 	src/xnu_syscall/bsd/bsd_syscall.S
 
+	src/xnu_syscall/bsd/helper/bpf/bpf_device.c
+	src/xnu_syscall/bsd/helper/bpf/bpf_program.c
+
+	src/xnu_syscall/bsd/helper/stat/guest_mount.c
+
 	src/xnu_syscall/bsd/helper/ioctl/termios.c
 	src/xnu_syscall/bsd/helper/ioctl/filio.c
 	src/xnu_syscall/bsd/helper/ioctl/socket.c
@@ -100,6 +124,9 @@ set(xnu_syscall_bsd_sources
 	src/xnu_syscall/bsd/helper/misc/readline.c
 	src/xnu_syscall/bsd/helper/misc/fdpath.c
 	src/xnu_syscall/bsd/helper/misc/dataless.c
+	src/xnu_syscall/bsd/helper/misc/nofile_limit.c
+	src/xnu_syscall/bsd/helper/misc/host_platform.c
+	src/xnu_syscall/bsd/helper/misc/platform_identity.c
 	src/xnu_syscall/bsd/helper/misc/sysctl_hw.c
 	src/xnu_syscall/bsd/helper/misc/sysctl_kern.c
 	src/xnu_syscall/bsd/helper/misc/sysctl_machdep.c
@@ -119,6 +146,8 @@ set(xnu_syscall_bsd_sources
 	src/xnu_syscall/bsd/helper/network/sockextra.c
 
 	src/xnu_syscall/bsd/impl/audit/audit_addr.c
+	src/xnu_syscall/bsd/impl/audit/auditon.c
+	src/xnu_syscall/bsd/impl/audit/audit.c
 	src/xnu_syscall/bsd/impl/audit/audit_session_join.c
 	src/xnu_syscall/bsd/impl/audit/audit_session_port.c
 	src/xnu_syscall/bsd/impl/audit/audit_session_self.c
@@ -152,6 +181,7 @@ set(xnu_syscall_bsd_sources
 	src/xnu_syscall/bsd/impl/kqueue/kevent_qos.c
 	src/xnu_syscall/bsd/impl/kqueue/kqueue.c
 	src/xnu_syscall/bsd/impl/misc/abort_with_payload.c
+	src/xnu_syscall/bsd/impl/misc/mremap_encrypted.c
 	src/xnu_syscall/bsd/impl/misc/clonefile.c
 	src/xnu_syscall/bsd/impl/misc/csops.c
 	src/xnu_syscall/bsd/impl/misc/csrctl.c
@@ -159,6 +189,7 @@ set(xnu_syscall_bsd_sources
 	src/xnu_syscall/bsd/impl/misc/x86sim_memfd.c # x86Sim
 	src/xnu_syscall/bsd/impl/misc/x86sim_inotify.c # x86Sim
 	src/xnu_syscall/bsd/impl/misc/fileport_makeport.c
+	src/xnu_syscall/bsd/impl/misc/fsctl.c
 	src/xnu_syscall/bsd/impl/misc/fsgetpath.c
 	src/xnu_syscall/bsd/impl/misc/getentropy.c
 	src/xnu_syscall/bsd/impl/misc/gethostuuid.c
@@ -166,9 +197,9 @@ set(xnu_syscall_bsd_sources
 	src/xnu_syscall/bsd/impl/misc/getrlimit.c
 	src/xnu_syscall/bsd/impl/misc/getrusage.c
 	src/xnu_syscall/bsd/impl/misc/iopolicysys.c
-	src/xnu_syscall/bsd/impl/misc/fsctl.c # x86Sim
-	src/xnu_syscall/bsd/impl/misc/proc_info.c
+	src/xnu_syscall/bsd/impl/misc/kdebug_trace.c
 	src/xnu_syscall/bsd/impl/misc/mac_syscall.c
+	src/xnu_syscall/bsd/impl/misc/proc_info.c
 	src/xnu_syscall/bsd/impl/misc/ptrace.c
 	src/xnu_syscall/bsd/impl/misc/reboot.c
 	src/xnu_syscall/bsd/impl/misc/setlogin.c
@@ -178,6 +209,7 @@ set(xnu_syscall_bsd_sources
 	src/xnu_syscall/bsd/impl/misc/sysctl.c
 	src/xnu_syscall/bsd/impl/misc/thread_selfid.c
 	src/xnu_syscall/bsd/impl/misc/thread_selfcounts.c # x86Sim
+	src/xnu_syscall/bsd/impl/misc/thread_selfusage.c
 	src/xnu_syscall/bsd/impl/mman/madvise.c
 	src/xnu_syscall/bsd/impl/mman/mman.c
 	src/xnu_syscall/bsd/impl/mman/msync.c
@@ -205,6 +237,8 @@ set(xnu_syscall_bsd_sources
 	src/xnu_syscall/bsd/impl/process/pid_suspend.c
 	src/xnu_syscall/bsd/impl/process/memorystatus.c
 	src/xnu_syscall/bsd/impl/process/setpriority.c
+	src/xnu_syscall/bsd/impl/process/task_inspect_for_pid.c
+	src/xnu_syscall/bsd/impl/process/task_read_for_pid.c
 	src/xnu_syscall/bsd/impl/process/vfork.c
 	src/xnu_syscall/bsd/impl/process/wait4.c
 	src/xnu_syscall/bsd/impl/process/waitid.c
@@ -240,6 +274,8 @@ set(xnu_syscall_bsd_sources
 	src/xnu_syscall/bsd/impl/stat/mkdir.c
 	src/xnu_syscall/bsd/impl/stat/mkdirat.c
 	src/xnu_syscall/bsd/impl/stat/mkfifo.c
+	src/xnu_syscall/bsd/impl/stat/mkfifoat.c
+	src/xnu_syscall/bsd/impl/stat/mount_table.c
 	src/xnu_syscall/bsd/impl/stat/rmdir.c
 	src/xnu_syscall/bsd/impl/stat/stat.c
 	src/xnu_syscall/bsd/impl/stat/stat64_extended.c
@@ -251,6 +287,7 @@ set(xnu_syscall_bsd_sources
 	src/xnu_syscall/bsd/impl/time/futimes.c
 	src/xnu_syscall/bsd/impl/time/getitimer.c
 	src/xnu_syscall/bsd/impl/time/gettimeofday.c
+	src/xnu_syscall/bsd/impl/time/ntp_adjtime.c
 	src/xnu_syscall/bsd/impl/time/setitimer.c
 	src/xnu_syscall/bsd/impl/time/utimes.c
 	src/xnu_syscall/bsd/impl/unistd/access.c
@@ -296,11 +333,13 @@ set(xnu_syscall_bsd_sources
 	src/xnu_syscall/bsd/impl/unistd/linkat.c
 	src/xnu_syscall/bsd/impl/unistd/lseek.c
 	src/xnu_syscall/bsd/impl/unistd/mknod.c
+	src/xnu_syscall/bsd/impl/unistd/mknodat.c
 	src/xnu_syscall/bsd/impl/unistd/pipe.c
 	src/xnu_syscall/bsd/impl/unistd/pread.c
-	src/xnu_syscall/bsd/impl/unistd/pwrite.c
 	src/xnu_syscall/bsd/impl/unistd/preadv.c
+	src/xnu_syscall/bsd/impl/unistd/pwrite.c
 	src/xnu_syscall/bsd/impl/mach/mach_eventlink.c
+	src/xnu_syscall/bsd/impl/unistd/pwritev.c
 	src/xnu_syscall/bsd/impl/unistd/read.c
 	src/xnu_syscall/bsd/impl/unistd/readlink.c
 	src/xnu_syscall/bsd/impl/unistd/readlinkat.c
@@ -400,4 +439,3 @@ add_dependencies(emulation_dyld rtsig_h generate_dserver_rpc_wrappers)
 
 make_fat(emulation)
 make_fat(emulation_dyld)
-

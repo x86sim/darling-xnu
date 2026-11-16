@@ -64,6 +64,36 @@ LEAF(___vfork, 0)
 	lock
 	cmpxchgl	%ecx, __current_pid
 	jne		0b
+#ifdef DARLING
+	/*
+	 * Darling's vfork is a fork: the child has its own copy of the
+	 * memory, so the return address stays on the stack. The call clobbers
+	 * %ecx and %edx and does not set the carry flag; it returns -errno on
+	 * failure, 0 in the child and the child's pid in the parent. The child
+	 * leaves __current_pid negative, so its getpid() asks the system.
+	 */
+	movl		$(SYS_vfork), %eax
+	UNIX_SYSCALL_TRAP
+	testl		%eax, %eax
+	jz		L1			// child
+	js		L2			// failure
+	pushl		%eax
+	GET_CURRENT_PID
+	lock
+	incl		__current_pid
+	popl		%eax
+L1:
+	ret
+
+L2:
+	negl		%eax
+	pushl		%eax
+	GET_CURRENT_PID
+	lock
+	incl		__current_pid
+	popl		%eax
+	BRANCH_EXTERN(tramp_cerror)
+#else
 	popl		%ecx
 	movl		$(SYS_vfork), %eax	// code for vfork -> eax
 	UNIX_SYSCALL_TRAP			// do the system call
@@ -85,6 +115,7 @@ L2:
 	lock
 	incl		__current_pid
 	jmp		*%ecx
+#endif
 
 #elif defined(__x86_64__)
 
@@ -222,6 +253,33 @@ Lparent:
 	MI_ENTRY_POINT(___vfork)
 	ARM64_STACK_PROLOG
 
+#ifdef DARLING
+	// Darling: sys_vfork is implemented as a full fork (the child gets its own
+	// address space), so the vfork bookkeeping of the cached pid is not needed
+	// and this mirrors ___fork. The syscall goes through __darling_bsd_syscall
+	// because svc would enter the Linux kernel, which does not know XNU syscalls.
+	// Returns: x0 > 0 parent (child PID), x0 == 0 child, x0 < 0 is -errno.
+	PUSH_FRAME
+	mov		x16, #SYS_vfork
+	bl		__darling_bsd_syscall
+	tbnz	x0, #63, Lbotch_neg			// negative => error
+	cbnz	x0, Lparent					// positive => parent (child PID in x0)
+
+	// Child (x0 == 0)
+	MI_GET_ADDRESS(x9, __current_pid)
+	mov		w0, #0
+	str		w0, [x9]					// Clear cached current pid
+	POP_FRAME
+	ARM64_STACK_EPILOG
+
+Lbotch_neg:
+	neg		x0, x0						// -errno -> errno
+	MI_CALL_EXTERNAL(_cerror)
+	mov		w0, #-1
+Lparent:
+	POP_FRAME
+	ARM64_STACK_EPILOG
+#else
 	MI_GET_ADDRESS(x9, __current_pid)
 Ltry_set_vfork:
 	ldxr	w10, [x9]			// Get old current pid value (exclusive)
@@ -230,7 +288,7 @@ Ltry_set_vfork:
 	csel	w12, w11, w10, pl	// If >= 0, set to -1, else set to (current - 1)
 	stxr	w13, w12, [x9]		// Attempt exclusive store to current pid
 	cbnz	w13, Ltry_set_vfork	// If store failed, retry
-	
+
 	// ARM sets r1 to 1 here.  I don't see why.
 	mov		w16, #SYS_vfork		// Set syscall code
 	svc		#SWI_SYSCALL
@@ -248,13 +306,14 @@ Lbotch:
 	mov		w0, #-1				// Set return value
 	MI_GET_ADDRESS(x9, __current_pid) // Reload current pid address
 	POP_FRAME
-	// Fall through	
+	// Fall through
 Lparent:
 	ldxr	w10, [x9]			// Exclusive load current pid value
 	add		w10, w10, #1		// Increment (i.e. decrement vfork count)
 	stxr	w11, w10, [x9]		// Attempt exclusive store of updated vfork count
 	cbnz	w11, Lparent		// If exclusive store failed, retry
 	ARM64_STACK_EPILOG		// Done, return
+#endif // DARLING
 
 #else
 #error Unsupported architecture

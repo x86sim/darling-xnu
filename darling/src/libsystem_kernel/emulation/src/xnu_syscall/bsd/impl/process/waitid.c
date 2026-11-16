@@ -1,6 +1,7 @@
 #include <darling/emulation/xnu_syscall/bsd/impl/process/waitid.h>
 
 #include <stddef.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/bsdthread/cancelable.h>
 
 #include <darling/emulation/common/base.h>
 #include <darling/emulation/conversion/errno.h>

@@ -13,6 +13,8 @@
 #include <darling/emulation/xnu_syscall/bsd/helper/bsdthread/cancelable.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/fcntl/fcntl.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/fcntl/open.h>
+#include <darling/emulation/xnu_syscall/bsd/impl/unistd/close.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/misc/nofile_limit.h>
 
 long sys_accept(int fd, void* from, int* socklen)
 {
@@ -24,6 +26,7 @@ long sys_accept_nocancel(int fd, void* from, int* socklen)
 {
 	int ret;
 	struct sockaddr_fixup* fixed;
+	int capacity = (from != NULL && socklen != NULL) ? *socklen : 0;
 
 #ifdef __NR_socketcall
 	ret = LINUX_SYSCALL(__NR_socketcall, LINUX_SYS_ACCEPT, ((long[6]) { fd, from, socklen }));
@@ -33,21 +36,29 @@ long sys_accept_nocancel(int fd, void* from, int* socklen)
 
 	if (ret < 0)
 		ret = errno_linux_to_bsd(ret);
-	else
+	else if ((ret = nofile_limit_check_new(ret)) >= 0)
 	{
-		// x86Sim: accept(fd, NULL, NULL) is valid; the address fixup dereferenced NULL (crashed backboardd's simhid)
-		if (from && socklen) {
+		int accepted_fd = ret;
+
+		if (from != NULL && socklen != NULL)
+		{
 			fixed = (struct sockaddr_fixup*) from;
-			fixed->bsd_family = sfamily_linux_to_bsd(fixed->linux_family);
-			fixed->bsd_length = *socklen;
+			int conv = sockaddr_fixup_from_linux(fixed, from, *socklen, capacity);
+			if (conv < 0)
+			{
+				// the caller never sees the new descriptor, so don't leak it
+				close_internal(accepted_fd);
+				return conv;
+			}
+			*socklen = conv;
 		}
 
 		// on macOS (and BSD), accept-ed sockets inherit O_NONBLOCK
 		int parent_flags = sys_fcntl_nocancel(fd, F_GETFL, 0);
-		int child_flags = sys_fcntl_nocancel(ret, F_GETFL, 0);
+		int child_flags = sys_fcntl_nocancel(accepted_fd, F_GETFL, 0);
 		// we silently ignore errors we get from fcntl (it's probably fine; fnctl shouldn't fail here)
 		if (parent_flags >= 0 && child_flags >= 0 && (parent_flags & BSD_O_NONBLOCK) != 0) {
-			sys_fcntl_nocancel(ret, F_SETFL, child_flags | BSD_O_NONBLOCK);
+			sys_fcntl_nocancel(accepted_fd, F_SETFL, child_flags | BSD_O_NONBLOCK);
 		}
 	}
 

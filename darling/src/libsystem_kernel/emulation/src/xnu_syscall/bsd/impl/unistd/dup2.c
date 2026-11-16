@@ -9,11 +9,19 @@
 #include <darling/emulation/common/guarded/table.h>
 #include <darling/emulation/linux_premigration/ext/for-libkqueue.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/network/socktables.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/misc/nofile_limit.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/bpf/bpf_device.h>
+
+extern void kqueue_dup(int oldfd, int newfd);
 
 long sys_dup2(int fd_from, int fd_to)
 {
 	int ret;
 	unsigned long long replacing = 0;
+
+	// dup2(2): EBADF for a target beyond the descriptor limit
+	if (nofile_limit_exceeded(fd_to))
+		return -EBADF;
 
 	if (guard_table_check(fd_to, guard_flag_prevent_close)) {
 		__simple_kprintf("*** Someone tried to close a guarded FD (%d) via dup2! ***", fd_to);
@@ -44,6 +52,11 @@ long sys_dup2(int fd_from, int fd_to)
 		}
 		kqueue_dup(fd_from, fd_to);
 		socket_tables_dup(fd_from, fd_to);
+		if (fd_from != fd_to) {
+			// fd_to was closed and now refers to fd_from's file.
+			bpf_device_close(fd_to);
+			bpf_device_dup(fd_from, fd_to);
+		}
 	}
 
 	return ret;

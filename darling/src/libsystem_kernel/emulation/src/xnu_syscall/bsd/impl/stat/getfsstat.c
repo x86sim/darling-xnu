@@ -17,12 +17,31 @@ extern unsigned long strlcpy(char* dst, const char* src, unsigned long size);
 
 long sys_getfsstat(struct bsd_statfs* buf, int bufsize, int flags)
 {
-#ifdef __x86_64__
-	return sys_getfsstat64((struct bsd_statfs64*) buf, bufsize, flags);
-#else
-#	warning Not implemented
-	return 0;
-#endif
+	// the legacy structure (as sys_statfs); bufsize counts bytes of it
+	int n;
+	long count;
+	unsigned long wsize;
+	struct bsd_statfs64* wide;
+
+	if (buf == NULL || bufsize <= 0)
+		return sys_getfsstat64(NULL, 0, flags);
+
+	n = bufsize / (int) sizeof(struct bsd_statfs);
+	if (n == 0)
+		return 0;
+	// not malloc: libsystem_kernel sits below libc
+	wsize = ((unsigned long) n * sizeof(struct bsd_statfs64) + 4095) & ~4095UL;
+	wide = (struct bsd_statfs64*) LINUX_SYSCALL(__NR_mmap, NULL, wsize, 3 /* PROT_READ | PROT_WRITE */,
+			0x22 /* MAP_PRIVATE | MAP_ANONYMOUS */, -1, 0);
+	if ((unsigned long) wide > (unsigned long) -4096)
+		return errno_linux_to_bsd((long) wide);
+
+	count = sys_getfsstat64(wide, (int) (n * sizeof(struct bsd_statfs64)), flags);
+	for (long i = 0; i < count && i < n; i++)
+		statfs_bsd64_to_bsd(&wide[i], &buf[i]);
+
+	LINUX_SYSCALL(__NR_munmap, wide, wsize);
+	return count;
 }
 
 // x86Sim: whether some /proc/self/mounts mount point has st_dev dev.

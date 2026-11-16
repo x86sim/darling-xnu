@@ -40,7 +40,6 @@ long sys_connect(int fd, const void* name, int socklen)
 long sys_connect_nocancel(int fd, const void* name, int socklen)
 {
 	int ret;
-	int linux_domain;
 	struct sockaddr_fixup* fixed;
 
 	if (socklen > 512)
@@ -51,11 +50,29 @@ long sys_connect_nocancel(int fd, const void* name, int socklen)
 	if (ret < 0)
 		return ret;
 
+	// DARLING workaround: Darwin clients on Darling-arm64 often set
+	// O_NONBLOCK on the socket and then wait for connect completion via
+	// Mach kqueue paths that Darling's kqueue plumbing doesn't yet wire
+	// through to Linux socket-fd readiness events. Temporarily clear
+	// O_NONBLOCK so the underlying Linux connect() blocks until the TCP
+	// handshake completes, then restore the original flags. The caller
+	// sees ret=0 instead of EINPROGRESS — close enough for the typical
+	// "connect then send" sequence to work without polling.
+	long flags = LINUX_SYSCALL(__NR_fcntl, fd, 3 /*F_GETFL*/, 0);
+	int was_nonblock = (flags >= 0) && (flags & 0x800 /*O_NONBLOCK*/);
+	if (was_nonblock) {
+		LINUX_SYSCALL(__NR_fcntl, fd, 4 /*F_SETFL*/, flags & ~0x800L);
+	}
+
 #ifdef __NR_socketcall
 	ret = LINUX_SYSCALL(__NR_socketcall, LINUX_SYS_CONNECT, ((long[6]) { fd, fixed, socklen }));
 #else
 	ret = LINUX_SYSCALL(__NR_connect, fd, fixed, socklen);
 #endif
+
+	if (was_nonblock) {
+		LINUX_SYSCALL(__NR_fcntl, fd, 4 /*F_SETFL*/, flags);  // restore O_NONBLOCK
+	}
 
 	if (ret < 0)
 		ret = errno_linux_to_bsd(ret);
@@ -66,6 +83,11 @@ long sys_connect_nocancel(int fd, const void* name, int socklen)
 
 	return ret;
 }
+
+#include <darling/emulation/xnu_syscall/bsd/impl/network/bind.h>
+#include <darling/emulation/xnu_syscall/bsd/impl/unistd/writev.h>
+#include <darling/emulation/xnu_syscall/bsd/impl/network/shutdown.h>
+#include <darling/emulation/xnu_syscall/bsd/impl/network/getsockopt.h>
 
 // x86Sim: connectx (BSD 447). iOS 27's Network.framework opens every TCP flow with connectx(), not connect(); without it
 // the call failed and NSURLSession reported "The Internet connection appears to be offline" (ENETDOWN on the flow).
@@ -79,7 +101,6 @@ struct bsd_sa_endpoints {
 	const void* sae_dstaddr;
 	unsigned int sae_dstaddrlen;
 };
-extern long sys_bind(int fd, const void* name, int socklen);
 
 long sys_connectx(int fd, const void* endpoints, unsigned int associd, unsigned int flags, const void* iov,
 		unsigned int iovcnt, unsigned long* len, unsigned int* connid)
@@ -106,10 +127,26 @@ long sys_connectx(int fd, const void* endpoints, unsigned int associd, unsigned 
 	return 0;
 }
 
-// x86Sim: disconnectx (BSD 448): one connection per socket here (connectx's id 1): shut it down both ways
-extern long sys_shutdown(int fd, int how);
+// disconnectx (BSD 448), upstream Darling's: a stream connection is shut down, a datagram socket drops its peer
 long sys_disconnectx(int fd, unsigned int associd, unsigned int connid)
 {
-	(void) associd; (void) connid;
-	return sys_shutdown(fd, 2 /* SHUT_RDWR */);
+	int type = 0, typelen = sizeof(type);
+	long ret = sys_getsockopt(fd, SOL_SOCKET, SO_TYPE, &type, &typelen);
+	if (ret < 0)
+		return ret;
+
+	// A stream connection is closed gracefully (FIN), as on macOS. Linux
+	// aborts it with a reset when a TCP socket is connected to AF_UNSPEC.
+	if (type == SOCK_STREAM)
+	{
+		ret = sys_shutdown(fd, SHUT_RDWR);
+		return (ret < 0) ? ret : 0;
+	}
+
+	// Other sockets drop their peer address.
+	struct sockaddr sa;
+	__builtin_memset(&sa, 0, sizeof(sa));
+	sa.sa_family = AF_UNSPEC;
+	ret = sys_connect_nocancel(fd, &sa, sizeof(sa));
+	return (ret < 0) ? ret : 0;
 }

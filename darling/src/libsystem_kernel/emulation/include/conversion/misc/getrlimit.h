@@ -40,9 +40,13 @@ enum {
 	BSD_RLIMIT_POSIX = 0x1000
 };
 
-// Darwin's RLIM_INFINITY is 2^63 - 1 (xnu bsd/sys/resource.h, also RLIM_SAVED_MAX); Linux's is ~0.
-#define XNU_RLIM_INFINITY	0x7fffffffffffffffULL
-#define LINUX_RLIM_INFINITY	(~0ULL)
+// Darwin's RLIM_INFINITY is 2^63 - 1 (xnu bsd/sys/resource.h); Linux uses ~0.
+#define XNU_RLIM_INFINITY 0x7fffffffffffffffULL
+#define LINUX_RLIM_INFINITY (~0ULL)
+
+// Darwin's OPEN_MAX (sys/syslimits.h). getrlimit and getdtablesize never
+// report an RLIMIT_NOFILE value above it.
+#define DARWIN_OPEN_MAX 10240
 
 unsigned int rlimit_bsd_to_linux(unsigned int which);
 

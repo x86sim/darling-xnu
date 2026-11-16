@@ -1,4 +1,7 @@
 #include <darling/emulation/other/mach/lkm.h>
+#if defined(__aarch64__)
+#include <darling/emulation/linux_premigration/elfcalls_size.h>
+#endif
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -13,6 +16,7 @@
 #include <darling/emulation/common/guarded/table.h>
 #include <darling/emulation/linux_premigration/elfcalls_wrapper.h>
 #include <darling/emulation/linux_premigration/ext/sys/linux_time.h>
+#include <darling/emulation/xnu_syscall/machdep/impl/tls.h>
 
 #include <elfcalls.h>
 
@@ -27,6 +31,10 @@ extern _libkernel_functions_t _libkernel_functions;
 
 VISIBLE
 struct elf_calls* _elfcalls;
+#if defined(__aarch64__)
+// Size of the loader's elf_calls table in bytes, 0 when the loader did not say.
+size_t _elfcalls_size;
+#endif
 
 static bool use_per_thread_driver_fd = false;
 
@@ -58,6 +66,20 @@ void* darling_foreign_hook(const char* name)
 
 static void elfcalls_from_applep(const char** applep)
 {
+#if defined(__aarch64__)
+	// Both the static dyld copy and the dynamic kernel copy publish TSD. The
+	// latter must initialize this offset too, including on new guest threads.
+	if (applep != NULL) {
+		for (int i = 0; applep[i] != NULL; ++i) {
+			if (strncmp(applep[i], "darling_tsd_slot_offset=", 24) == 0) {
+				const char* end = NULL;
+				unsigned long offset = __simple_atoi16(applep[i] + 24, &end);
+				if (end && *end == '\0' && end != applep[i] + 24)
+					sys_thread_set_native_tsd_slot_offset(offset);
+			}
+		}
+	}
+#endif
 	if (applep != NULL)
 	{
 		int i;
@@ -67,6 +89,9 @@ static void elfcalls_from_applep(const char** applep)
 			{
 				uintptr_t table = (uintptr_t) __simple_atoi16(applep[i] + 10, NULL);
 				_elfcalls = (struct elf_calls*) table;
+#if defined(__aarch64__)
+				_elfcalls_size = elfcalls_size_from_apple(applep);
+#endif
 			}
 		}
 	}
@@ -80,10 +105,18 @@ void mach_driver_init(const char** applep)
 	if (darling_libkernel_functions_present())
 	{
 		// ask for elfcalls already set up by dyld
-		void* (*p2)(void);
+		void* (*p2)(void) = NULL;
 		_libkernel_functions->dyld_func_lookup("__dyld_get_elfcalls", (void**)&p2);
-
-		_elfcalls = p2();
+		if (p2) {
+			_elfcalls = p2();
+#if defined(__aarch64__)
+			size_t (*get_size)(void) = NULL;
+			_elfcalls_size = 0;
+			_libkernel_functions->dyld_func_lookup("__dyld_get_elfcalls_size", (void**)&get_size);
+			if (_elfcalls && get_size)
+				_elfcalls_size = get_size();
+#endif
+		}
 	}
 	else
 	{
@@ -97,15 +130,32 @@ void mach_driver_init(const char** applep)
 		}
 	}
 
+#if defined(__aarch64__)
+	if (applep) {
+		// dyld links its own static copy of the TSD table (tls.c) and registered the main thread's
+		// TSD base (its main pthread structure) only there. Register the same base in this library's
+		// table; otherwise the main thread falls back to the shared zero TSD page, and libpthread
+		// adopts a pthread structure with thread_id 0 (breaking mutex ownership checks).
+		void* (*dyld_get_tsd_base)(void) = NULL;
+		if (_libkernel_functions && _libkernel_functions->dyld_func_lookup)
+			_libkernel_functions->dyld_func_lookup("__dyld_get_tsd_base", (void**)&dyld_get_tsd_base);
+		if (dyld_get_tsd_base && !sys_thread_has_tsd_base()) {
+			void* base = dyld_get_tsd_base();
+			if (base != NULL)
+				sys_thread_set_tsd_base(base, 0);
+		}
+	}
+#endif
+
 	if (applep) {
 		// this is not a fork; guard the main thread's RPC FD we get from mldr
 		// (in the child after a fork, sys_fork already takes care of this)
 		guard_entry_options_t options;
-		options.close = _elfcalls->dserver_close_socket;
+		options.close = _elfcalls ? _elfcalls->dserver_close_socket : NULL;
 		guard_table_add(__dserver_per_thread_socket(), guard_flag_prevent_close | guard_flag_close_on_fork, &options);
 		int lifetime_pipe = __dserver_get_process_lifetime_pipe();
 		if (lifetime_pipe != -1) {
-			options.close = _elfcalls->dserver_close_process_lifetime_pipe;
+			options.close = _elfcalls ? _elfcalls->dserver_close_process_lifetime_pipe : NULL;
 			guard_table_add(lifetime_pipe, guard_flag_prevent_close | guard_flag_close_on_fork, &options);
 		}
 	}
@@ -169,6 +219,13 @@ VISIBLE
 void* elfcalls_get_pointer(void) {
 	return _elfcalls;
 };
+
+#if defined(__aarch64__)
+VISIBLE
+size_t elfcalls_get_size(void) {
+	return _elfcalls ? _elfcalls_size : 0;
+}
+#endif
 
 VISIBLE
 uint64_t mach_absolute_time(void)

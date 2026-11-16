@@ -6,6 +6,8 @@
 #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
 #include <darling/emulation/linux_premigration/ext/for-libkqueue.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/network/socktables.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/misc/nofile_limit.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/bpf/bpf_device.h>
 
 __attribute__((weak))
 __attribute__((visibility("default")))
@@ -24,8 +26,12 @@ long sys_dup(int fd)
 	if (ret < 0)
 		ret = errno_linux_to_bsd(ret);
 	else {
-		kqueue_dup(fd, ret);
-		socket_tables_dup(fd, ret);
+		ret = nofile_limit_check_new(ret);
+		if (ret >= 0) {
+			kqueue_dup(fd, ret);
+			bpf_device_dup(fd, ret);
+			socket_tables_dup(fd, ret); // x86Sim
+		}
 	}
 
 	return ret;

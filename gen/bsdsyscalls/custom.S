@@ -67,6 +67,9 @@ LABEL(__sysenter_trap)
 _i386_get_ldt:
 	movl    $6,%eax
 	MACHDEP_SYSCALL_TRAP
+#ifdef DARLING
+	DARLING_SYSCALL_RESULT_TO_CF
+#endif
 	jnb		2f
 	jmp		tramp_cerror
 2:	ret
@@ -77,6 +80,9 @@ _i386_get_ldt:
 _i386_set_ldt:
 	movl    $5,%eax
 	MACHDEP_SYSCALL_TRAP
+#ifdef DARLING
+	DARLING_SYSCALL_RESULT_TO_CF
+#endif
 	jnb		2f
 	jmp		tramp_cerror
 2:	ret
@@ -137,10 +143,22 @@ __thread_set_tsd_base:
 	.align 2
 	.globl __thread_set_tsd_base
 __thread_set_tsd_base:
+#ifdef DARLING
+	// x0 already has the tsd base from the C caller; pass 0 as the second
+	// arg ("unk") and route through Darling's machdep syscall dispatcher.
+	mov	x1, #0
+	mov	x16, #3              // machdep syscall #3 = thread_set_tsd_base
+	stp	x29, x30, [sp, #-16]!
+	mov	x29, sp
+	bl	__darling_machdep_syscall
+	ldp	x29, x30, [sp], #16
+	ret
+#else
 	mov	x3, #2
 	mov	x16, #0x80000000
 	svc 	#SWI_SYSCALL
 	ret
+#endif
 
 #else
 #error unknown architecture

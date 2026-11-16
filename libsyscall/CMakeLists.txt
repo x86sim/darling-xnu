@@ -167,6 +167,12 @@ set(syscall_dynamic_sources
 	wrappers/_libc_funcptr.c
 	wrappers/_libkernel_init.c)
 
+# select-pre1050 conflicts with select-cancel on ARM64 (duplicate symbols);
+# pre-1050 legacy wrappers are only needed for i386/x86_64 compatibility
+if (NOT CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
+	set(syscall_select_pre1050_source wrappers/legacy/select-pre1050.c)
+endif()
+
 set(syscall_sources
 	mach/mach_traps.S
 
@@ -216,6 +222,7 @@ set(syscall_sources
 	wrappers/sfi.c
 	# wrappers/sigsuspend-base.c
 	wrappers/stackshot.c
+	wrappers/statfs_ext.c
 	wrappers/system-version-compat.c
 	wrappers/system-version-compat-support.c
 	wrappers/terminate_with_reason.c
@@ -238,7 +245,7 @@ set(syscall_sources
 	wrappers/cancelable/sigsuspend-cancel.c
 
 	${syscall_legacy_sources}
-	wrappers/legacy/select-pre1050.c
+	${syscall_select_pre1050_source}
 
 	wrappers/libproc/libproc.c
 	wrappers/libproc/proc_listpidspath.c
@@ -404,13 +411,13 @@ set(syscall_sources
 	bsdsyscalls/_getdirentriesattr.S
 	bsdsyscalls/_getdirentries.S
 	bsdsyscalls/_getdtablesize.S
-	bsdsyscalls/_getegid.S
+	bsdsyscalls/___getegid.S
 	bsdsyscalls/_getentropy.S
-	bsdsyscalls/_geteuid.S
+	bsdsyscalls/___geteuid.S
 	bsdsyscalls/_getfh.S
 	bsdsyscalls/_getfsstat64.S
 	bsdsyscalls/_getfsstat.S
-	bsdsyscalls/_getgid.S
+	bsdsyscalls/___getgid.S
 	bsdsyscalls/_getgroups.S
 	bsdsyscalls/___gethostuuid.S
 	bsdsyscalls/_getitimer.S
@@ -429,7 +436,7 @@ set(syscall_sources
 	bsdsyscalls/_getsockopt.S
 	bsdsyscalls/___gettid.S
 	bsdsyscalls/___gettimeofday.S
-	bsdsyscalls/_getuid.S
+	bsdsyscalls/___getuid.S
 	bsdsyscalls/___getwgroups.S
 	bsdsyscalls/_getxattr.S
 	bsdsyscalls/_grab_pgo_data.S
@@ -500,6 +507,8 @@ set(syscall_sources
 	bsdsyscalls/_mkdir.S
 	bsdsyscalls/___mkfifo_extended.S
 	bsdsyscalls/_mkfifo.S
+	bsdsyscalls/_mkfifoat.S
+	bsdsyscalls/_mknodat.S
 	bsdsyscalls/_mknod.S
 	bsdsyscalls/_mlockall.S
 	bsdsyscalls/_mlock.S
@@ -732,12 +741,14 @@ set(syscall_sources
 )
 
 set_source_files_properties(${syscall_legacy_sources} PROPERTIES COMPILE_FLAGS "-U_DARWIN_C_SOURCE -U__DARWIN_UNIX03 -D__DARWIN_UNIX03=0 -U__DARWIN_C_LEVEL")
-set_source_files_properties(wrappers/legacy/select-pre1050.c PROPERTIES COMPILE_FLAGS "-U_DARWIN_C_SOURCE -DSYSCALL_PRE1050")
+if (syscall_select_pre1050_source)
+	set_source_files_properties(wrappers/legacy/select-pre1050.c PROPERTIES COMPILE_FLAGS "-U_DARWIN_C_SOURCE -DSYSCALL_PRE1050")
+endif()
 set_source_files_properties(wrappers/cancelable/select-cancel.c PROPERTIES COMPILE_FLAGS "-U_DARWIN_C_SOURCE")
 set_source_files_properties(wrappers/cancelable/select.c PROPERTIES COMPILE_FLAGS "-U_DARWIN_C_SOURCE")
 
 foreach (file IN ITEMS ${syscall_legacy_sources})
-	set_source_files_properties(${file} PROPERTIES COMPILE_FLAGS "${CMAKE_C_FLAGS} -U_DARWIN_C_SOURCE -U_POSIX_C_SOURCE -U__DARWIN_UNIX03 -D__DARWIN_UNIX03=0  -U__DARWIN_C_LEVEL")
+	set_source_files_properties(${file} PROPERTIES COMPILE_FLAGS "-U_DARWIN_C_SOURCE -U_POSIX_C_SOURCE -U__DARWIN_UNIX03 -D__DARWIN_UNIX03=0  -U__DARWIN_C_LEVEL")
 endforeach(file)
 
 add_compile_options(
@@ -784,6 +795,5 @@ make_fat(libsyscall_dynamic)
 #add_darling_object_library(libsyscall_legacy_extra wrappers/legacy/select.c)
 #set_target_properties(libsyscall_legacy_extra PROPERTIES COMPILE_FLAGS
 #	"${CMAKE_C_FLAGS} -U_DARWIN_C_SOURCE -U_POSIX_C_SOURCE -U__DARWIN_UNIX03 -D__DARWIN_UNIX03=0 -U__DARWIN_C_LEVEL")
-
 
 

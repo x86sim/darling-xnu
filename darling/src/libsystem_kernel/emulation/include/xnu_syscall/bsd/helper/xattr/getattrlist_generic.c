@@ -171,7 +171,7 @@
 
 #define ATTR_FORK_VALIDMASK     0x00000003
 
-// x86Sim: Darwin xattr names live in Linux's "user." namespace (xattr_names.h)
+// x86Sim: Darwin xattr names live in Linux's "user." namespace (xattr_utils.h)
 #define XATTR_FINDER_INFO "user.com.apple.FinderInfo"
 #define XATTR_RESOURCE_FORK "user.com.apple.ResourceFork"
 

@@ -42,6 +42,47 @@ struct linux_stat {
 	unsigned long long      st_ino;
 };
 
+#elif defined(__aarch64__) || defined(__arm64__)
+
+/* Linux ARM64 follows the generic ABI; layout is different from x86_64:
+ *  - st_mode/uid/gid come right after dev/ino (no extra st_nlink upfront)
+ *  - st_blksize is `int` not `long`
+ *  - field order matches asm-generic/stat.h
+ */
+typedef unsigned long long __kernel_ulong_t;
+typedef long long __kernel_long_t;
+
+#ifdef st_atime
+#	undef st_atime
+#	undef st_mtime
+#	undef st_ctime
+#	undef __unused
+#endif
+
+struct linux_stat {
+	__kernel_ulong_t  st_dev;          /* 0 */
+	__kernel_ulong_t  st_ino;          /* 8 */
+	unsigned int      st_mode;         /* 16 */
+	unsigned int      st_nlink;        /* 20 */
+	unsigned int      st_uid;          /* 24 */
+	unsigned int      st_gid;          /* 28 */
+	__kernel_ulong_t  st_rdev;         /* 32 */
+	__kernel_ulong_t  __pad1;          /* 40 */
+	__kernel_long_t   st_size;         /* 48 */
+	int               st_blksize;      /* 56 */
+	int               __pad2;          /* 60 */
+	__kernel_long_t   st_blocks;       /* 64 */
+
+	__kernel_ulong_t  st_atime;        /* 72 */
+	__kernel_ulong_t  st_atime_nsec;   /* 80 */
+	__kernel_ulong_t  st_mtime;        /* 88 */
+	__kernel_ulong_t  st_mtime_nsec;   /* 96 */
+	__kernel_ulong_t  st_ctime;        /* 104 */
+	__kernel_ulong_t  st_ctime_nsec;   /* 112 */
+	unsigned int      __unused4;       /* 120 */
+	unsigned int      __unused5;       /* 124 */
+};
+
 #else
 
 typedef unsigned long long __kernel_ulong_t;
@@ -79,6 +120,9 @@ struct linux_stat {
 
 #endif
 
+// The layout of struct statfs without 64-bit inodes (statfs, fstatfs, getfsstat): short and long fields, names
+// limited to MFSNAMELEN / MNAMELEN (90) bytes. The non-$INODE64 entry points fill it in every process; `long` is
+// 4 bytes in a 32-bit process (272 bytes in all) and 8 in a 64-bit one (336 bytes).
 struct bsd_statfs
 {
 	short f_otype;
@@ -96,12 +140,15 @@ struct bsd_statfs
 	short f_type;
 	long f_flags;
 	long f_reserved2[2];
-	char f_fstypename[16];
-	char f_mntonname[1024];
-	char f_mntfromname[1024];
+	char f_fstypename[15];
+	char f_mntonname[90];
+	char f_mntfromname[90];
 	char f_reserved3;
 	long f_reserved4[4];
 };
+
+_Static_assert(sizeof(long) != 4 || sizeof(struct bsd_statfs) == 272, "legacy statfs layout of a 32-bit process");
+_Static_assert(sizeof(long) != 8 || sizeof(struct bsd_statfs) == 336, "legacy statfs layout of a 64-bit process");
 
 struct bsd_statfs64
 {
@@ -125,6 +172,8 @@ struct bsd_statfs64
 	long long f_reserved4[4];
 };
 
+_Static_assert(sizeof(struct bsd_statfs64) == 2168, "struct statfs64 layout");
+
 struct linux_statfs64
 {
 	long f_type;
@@ -141,14 +190,13 @@ struct linux_statfs64
 	long f_spare[4];
 };
 
-struct stat;
-struct stat64;
+#include <darling/emulation/conversion/stat/types.h>
 
 void stat_linux_to_bsd(const struct linux_stat* lstat, struct stat* stat);
-void stat_linux_to_bsd64(const struct linux_stat* lstat, struct stat64* stat);
-// x86Sim: st_flags (chflags flags, xnu_syscall/bsd/helper/misc/bsdflags.h); struct stat64 is opaque elsewhere
-void stat_set_flags64(struct stat64* stat, unsigned int flags);
-void statfs_linux_to_bsd(const struct linux_statfs64* lstat, struct bsd_statfs* stat);
+void stat_linux_to_bsd64(const struct linux_stat* lstat, darling_stat64_t* stat);
+// x86Sim: st_flags (chflags flags, xnu_syscall/bsd/helper/misc/bsdflags.h)
+void stat_set_flags64(darling_stat64_t* stat, unsigned int flags);
 void statfs_linux_to_bsd64(const struct linux_statfs64* lstat, struct bsd_statfs64* stat);
+void statfs_bsd64_to_bsd(const struct bsd_statfs64* wide, struct bsd_statfs* stat);
 
 #endif // LINUX_STAT_COMMON_H

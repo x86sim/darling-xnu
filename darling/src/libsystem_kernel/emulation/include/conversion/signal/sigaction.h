@@ -78,6 +78,8 @@ typedef void (linux_sig_handler)(int, struct linux_siginfo*, void*);
 #define XNU_SIG_ERR ((bsd_sig_handler*)-1l)
 #endif
 
+typedef void (*bsd_sig_tramp)(void*, int, int, struct bsd_siginfo*, void*);
+
 struct bsd_sigaction
 {
 	bsd_sig_handler* sa_sigaction;
@@ -88,7 +90,7 @@ struct bsd_sigaction
 struct bsd___sigaction
 {
 	bsd_sig_handler* sa_sigaction;
-	void (*sa_tramp)(void*, int, int, struct bsd_siginfo*, void*);
+	bsd_sig_tramp sa_tramp;
 	unsigned int sa_mask;
 	int sa_flags;
 };
@@ -101,7 +103,7 @@ struct linux_sigaction
 	linux_sigset_t sa_mask;
 };
 
-#ifdef __x86_64__
+#if defined(__x86_64__)
 typedef struct _fpstate {
         unsigned short cwd, swd, ftw, fop;
         unsigned long long rip, rdp;
@@ -123,7 +125,7 @@ struct linux_gregset
 	long long err, trapno, oldmask, cr2;
 };
 
-#else // now the i386 version
+#elif defined(__i386__)
 
 typedef struct _fpstate {
         unsigned long cw, sw, tag, ipoff, cssel, dataoff, datasel;
@@ -150,16 +152,51 @@ struct linux_gregset
 	int trapno, err, eip, cs, efl, uesp;
 	int ss;
 };
+
+#elif defined(__aarch64__) || defined(__arm64__)
+
+// ARM64 Linux FPSIMD context header
+struct linux_aarch64_ctx {
+	unsigned int magic;
+	unsigned int size;
+};
+
+// ARM64 Linux FPSIMD state (embedded in sigcontext.__reserved)
+struct linux_fpsimd_context {
+	struct linux_aarch64_ctx head;
+	unsigned int fpsr;
+	unsigned int fpcr;
+	__uint128_t vregs[32];
+};
+
+typedef struct linux_fpsimd_context *linux_fpregset_t;
+
+// ARM64 Linux general-purpose registers (matches sigcontext layout)
+struct linux_gregset
+{
+	unsigned long long fault_address;
+	unsigned long long regs[31]; // x0-x30
+	unsigned long long sp;
+	unsigned long long pc;
+	unsigned long long pstate;
+};
+
 #endif
 
 struct linux_mcontext
 {
+#if defined(__aarch64__) || defined(__arm64__)
+	struct linux_gregset gregs;
+	// On ARM64 Linux, fpsimd is in __reserved area of sigcontext
+	unsigned char __reserved[4096] __attribute__((__aligned__(16)));
+#else
 	struct linux_gregset gregs;
 	linux_fpregset_t fpregs;
 #ifdef __x86_64__
 	unsigned long long __reserved[8];
 #else
 	unsigned long oldmask, cr2;
+#endif
 #endif
 	// +reserved
 };
@@ -169,11 +206,42 @@ struct linux_ucontext
 	unsigned long uc_flags;
 	struct linux_ucontext* uc_link;
 	struct linux_stack uc_stack;
+#if defined(__aarch64__) || defined(__arm64__)
+	// Linux reserves 1024 bits for the mask before its extensible mcontext.
+	linux_sigset_t uc_sigmask;
+	unsigned char __sigmask_padding[128 - sizeof(linux_sigset_t)];
+	struct linux_mcontext uc_mcontext;
+#else
 	struct linux_mcontext uc_mcontext;
 	linux_sigset_t uc_sigmask;
+#endif
 	// linux_libc_fpstate fpregs_mem;
 };
 
+#if defined(__aarch64__) || defined(__arm64__)
+struct bsd_exception_state
+{
+	unsigned long long faultvaddr; // __far (virtual fault address at offset 0)
+	unsigned int err;              // __esr (exception syndrome)
+	unsigned int trapno;           // __exception
+};
+
+struct bsd_thread_state
+{
+	unsigned long long x[29];
+	unsigned long long fp, lr, sp, pc;
+	unsigned int cpsr;
+	unsigned int _pad;
+};
+
+struct bsd_float_state
+{
+	__uint128_t v[32];
+	unsigned int fpsr;
+	unsigned int fpcr;
+	unsigned int _pad;
+};
+#elif defined(__x86_64__)
 struct bsd_exception_state
 {
 	unsigned short trapno;
@@ -184,19 +252,54 @@ struct bsd_exception_state
 
 struct bsd_thread_state
 {
-#ifdef __x86_64__
 	long long rax, rbx, rcx, rdx, rdi, rsi, rbp, rsp, r8, r9, r10;
 	long long r11, r12, r13, r14, r15, rip, rflags, cs, fs, gs;
-#else
-	int eax, ebx, ecx, edx, edi, esi, ebp, esp, ss, eflags;
-	int eip, cs, ds, es, fs, gs;
-#endif
 };
 
 struct bsd_float_state
 {
-	// TODO
+	int fpu_reserved[2];
+	short fpu_fcw;
+	short fpu_fsw;
+	unsigned char fpu_ftw;
+	unsigned char fpu_rsrv1;
+	unsigned short fpu_fop;
+	unsigned int fpu_ip;
+	unsigned short fpu_cs;
+	unsigned short fpu_rsrv2;
+	unsigned int fpu_dp;
+	unsigned short fpu_ds;
+	unsigned short fpu_rsrv3;
+	unsigned int fpu_mxcsr;
+	unsigned int fpu_mxcsrmask;
+	unsigned char fpu_stmm[128];
+	unsigned char fpu_xmm[256];
+	unsigned char fpu_rsrv4[96];
+	int fpu_reserved1;
 };
+#elif defined(__i386__)
+struct bsd_exception_state
+{
+	unsigned short trapno;
+	unsigned short cpu;
+	unsigned int err;
+	unsigned long faultvaddr;
+};
+
+struct bsd_thread_state
+{
+	int eax, ebx, ecx, edx, edi, esi, ebp, esp, ss, eflags;
+	int eip, cs, ds, es, fs, gs;
+};
+
+struct bsd_float_state
+{
+	// Same size as Darwin's i386 float state (524 bytes), so that
+	// uc_mcsize and the mcontext match what i386 code expects.
+	// The contents are not filled in yet.
+	unsigned char fpu_bytes[524];
+};
+#endif
 
 struct bsd_mcontext
 {

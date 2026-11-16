@@ -7,11 +7,31 @@ long sys_ulock_wait(uint32_t operation, void* addr, uint64_t value, uint32_t tim
 void ulock_atfork_child(void); // x86Sim
 long sys_ulock_wait2(uint32_t operation, void* addr, uint64_t value, uint64_t timeout, uint64_t value2);
 
-#define XNU_UL_OPCODE_MASK		0xff
-#define XNU_UL_COMPARE_AND_WAIT	1
-#define XNU_UL_UNFAIR_LOCK		2
-#define XNU_ULF_NO_ERRNO		0x1000000
-#define XNU_ULF_DEADLINE		0x2000000 // x86Sim: ulock_wait2's timeout is a deadline
+#define XNU_UL_OPCODE_MASK					0x000000ff
+#define XNU_UL_COMPARE_AND_WAIT				1
+#define XNU_UL_UNFAIR_LOCK					2
+#define XNU_UL_COMPARE_AND_WAIT_SHARED		3
+#define XNU_UL_UNFAIR_LOCK64_SHARED			4
+#define XNU_UL_COMPARE_AND_WAIT64			5
+#define XNU_UL_COMPARE_AND_WAIT64_SHARED	6
+
+#define XNU_ULF_WAIT_CANCEL_POINT			0x00020000
+#define XNU_ULF_NO_ERRNO					0x01000000
+#define XNU_ULF_DEADLINE					0x02000000 // x86Sim: ulock_wait2's timeout is a deadline
+
+// Classification of the operation codes shared by wait and wake.
+// The *_SHARED operations work on memory shared between processes; the 64-bit ones
+// (COMPARE_AND_WAIT64*) compare the whole 64-bit word at the address.
+static inline int xnu_ulock_op_is_shared(uint32_t op)
+{
+	return op == XNU_UL_COMPARE_AND_WAIT_SHARED || op == XNU_UL_UNFAIR_LOCK64_SHARED ||
+		op == XNU_UL_COMPARE_AND_WAIT64_SHARED;
+}
+
+static inline int xnu_ulock_op_is_64bit(uint32_t op)
+{
+	return op == XNU_UL_COMPARE_AND_WAIT64 || op == XNU_UL_COMPARE_AND_WAIT64_SHARED;
+}
 
 #define FUTEX_WAIT			0
 #define FUTEX_PRIVATE_FLAG	128

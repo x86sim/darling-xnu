@@ -184,7 +184,8 @@ long sys_posix_spawn(int* pid, const char* path, const struct _posix_spawn_args_
 
 	// we don't want to call user atfork callbacks, but we *do* want to call most
 	// libsystem atfork callbacks to set up the environment for some of the calls we need
-	// to make for the setup
+	// to make for the setup (e.g. dup2() file actions take libkqueue's locks, which only
+	// the child callback resets)
 
 	if (darling_libkernel_functions_present())
 		_libkernel_functions->posix_spawn_prepare();
@@ -252,7 +253,7 @@ no_fork:
 
 			if (desc->attrp->psa_flags & POSIX_SPAWN_CLOEXEC_DEFAULT) {
 				// set O_CLOEXEC on everything
-				int dir = sys_open("/proc/self/fd", BSD_O_RDONLY, 0);
+				int dir = sys_open_nocancel("/proc/self/fd", BSD_O_RDONLY, 0);
 				char buf[4096];
 				int len = 0;
 
@@ -326,13 +327,13 @@ no_fork:
 
 						//__simple_kprintf("setting cloexec on %d\n", fd);
 
-						ret = sys_fcntl(fd, F_GETFD, 0);
+						ret = sys_fcntl_nocancel(fd, F_GETFD, 0);
 						if (ret < 0) {
 							close_internal(dir);
 							goto fail;
 						}
 
-						ret = sys_fcntl(fd, F_SETFD, ret | FD_CLOEXEC);
+						ret = sys_fcntl_nocancel(fd, F_SETFD, ret | FD_CLOEXEC);
 						if (ret < 0) {
 							close_internal(dir);
 							goto fail;
@@ -364,8 +365,6 @@ no_fork:
 
 				act = &desc->factp->psfa_act_acts[i];
 
-				//__simple_kprintf("act count (on iter %d): %d\n", i, desc->factp->psfa_act_count);
-
 				if (act->psfaa_filedes == pipe[1] || (act->psfaa_type == XNU_PSFA_DUP2 && act->psfaa_dup2args.psfad_newfiledes == pipe[1]))
 				{
 					ret = sys_dup(pipe[1]);
@@ -395,7 +394,7 @@ no_fork:
 					case XNU_PSFA_OPEN:
 					{
 						//__simple_kprintf("opening %s to %d\n", act->psfaa_openargs.psfao_path, act->psfaa_filedes);
-						ret = sys_open(act->psfaa_openargs.psfao_path,
+						ret = sys_open_nocancel(act->psfaa_openargs.psfao_path,
 								act->psfaa_openargs.psfao_oflag, act->psfaa_openargs.psfao_mode);
 						if (ret < 0)
 							goto fail;
@@ -433,11 +432,11 @@ no_fork:
 					// unset CLOEXEC on this fd
 					case XNU_PSFA_INHERIT: {
 						//__simple_kprintf("inheriting %d\n", act->psfaa_filedes);
-						ret = sys_fcntl(act->psfaa_filedes, F_GETFD, 0);
+						ret = sys_fcntl_nocancel(act->psfaa_filedes, F_GETFD, 0);
 						if (ret < 0) {
 							goto fail;
 						}
-						ret = sys_fcntl(act->psfaa_filedes, F_SETFD, ret & ~FD_CLOEXEC);
+						ret = sys_fcntl_nocancel(act->psfaa_filedes, F_SETFD, ret & ~FD_CLOEXEC);
 						if (ret < 0) {
 							goto fail;
 						}
@@ -457,6 +456,10 @@ no_fork:
 		{
 			char** new_envp;
 			int i, env_len = 0;
+			static char* empty_envp[] = { NULL };
+
+			if (envp == NULL)
+				envp = empty_envp;
 
 			while (envp[env_len])
 				env_len++;
@@ -482,7 +485,6 @@ no_fork:
 
 		ret = sys_execve((char*) path, argvp, envp);
 fail:
-		//__simple_kprintf("posix_spawn is failing with %d\n", ret);
 		if (desc && desc->attrp && desc->attrp->psa_flags & POSIX_SPAWN_SETEXEC)
 		{
 			// no_fork case
@@ -491,7 +493,7 @@ fail:
 		}
 		else
 		{
-			sys_write(pipe[1], &ret, sizeof(ret));
+			sys_write_nocancel(pipe[1], &ret, sizeof(ret));
 			sys_exit(127);
 			__builtin_unreachable();
 		}
@@ -519,7 +521,7 @@ fail:
 		if (pid != NULL)
 			*pid = my_pid;
 
-		if (sys_read(pipe[0], &ret, sizeof(ret)) != sizeof(ret))
+		if (sys_read_nocancel(pipe[0], &ret, sizeof(ret)) != sizeof(ret))
 			ret = 0;
 		close_internal(pipe[0]);
 	}

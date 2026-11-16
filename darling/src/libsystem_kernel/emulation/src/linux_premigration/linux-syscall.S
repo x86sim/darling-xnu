@@ -2,6 +2,9 @@
 .globl _linux_syscall
 .private_extern _linux_syscall
 
+#if defined(__aarch64__) || defined(__arm64__)
+.p2align 2
+#endif
 _linux_syscall:
 
 #if defined(__x86_64__)
@@ -67,6 +70,15 @@ _linux_syscall:
 	pop %esi
 	pop %ebx
 	pop %ebp
+	ret
+
+#elif defined(__aarch64__)
+
+	// ARM64 Linux syscall convention:
+	// syscall number in x8, arguments in x0-x5, return value in x0
+	// In the C calling convention, the 7th argument (syscall number) is in x6
+	mov  x8, x6
+	svc  #0
 	ret
 
 #else
