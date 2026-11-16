@@ -14,6 +14,7 @@ enum {
 enum {
 	_NET_RT_DUMP = 1,
 	_NET_RT_IFLIST = 3,
+	_NET_RT_IFLIST2 = 6,
 };
 
 const struct known_sysctl sysctls_net[] = {
@@ -30,7 +31,11 @@ static sysctl_handler(handle_route) {
 	// net.route.0.<address family>.<operation>.<interface index>
 	switch (name[4]) {
 		case _NET_RT_IFLIST:
-			return ifinfo_iflist(name[3], name[5], old, oldlen);
+		// x86Sim: NET_RT_IFLIST2 (RTM_IFINFO2 with 64-bit counters: .NET's GetAllNetworkInterfaces(), netstat -i,
+		// libtop) was EINVAL. XNU's also lists each interface's multicast memberships (RTM_NEWMADDR2, for
+		// getifmaddrs()); those aren't here, so getifmaddrs() finds none.
+		case _NET_RT_IFLIST2:
+			return ifinfo_iflist(name[3], name[5], name[4] == _NET_RT_IFLIST2, old, oldlen);
 		// x86Sim: the routing table (route.h)
 		case _NET_RT_DUMP:
 			return route_dump(name[3], old, oldlen);

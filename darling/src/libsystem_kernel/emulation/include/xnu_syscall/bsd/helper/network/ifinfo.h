@@ -15,11 +15,12 @@ struct ifinfo {
 	unsigned short arphrd;    // Linux's link type (ARPHRD_*)
 	unsigned int flags;       // Linux's IFF_*
 	unsigned int mtu;
+	unsigned int txqlen;      // IFLA_TXQLEN: the send queue's length limit
 	char name[16];
 	int name_len;
 	unsigned char lladdr[32];
 	int lladdr_len;
-	unsigned long long ipackets, opackets, ibytes, obytes, ierrors, oerrors, iqdrops, imcasts, collisions;
+	unsigned long long ipackets, opackets, ibytes, obytes, ierrors, oerrors, iqdrops, odrops, imcasts, collisions;
 };
 
 // The interface Linux numbers index, over the rtnetlink socket nl. Returns 0 or a negative BSD errno.
@@ -33,6 +34,8 @@ int ifinfo_link_sockaddr(const struct ifinfo* info, struct sockaddr_dl* sdl, uns
 // NET_RT_IFLIST (XNU's sysctl_iflist()): for each interface (only index's, if not 0), an RTM_IFINFO message, then an
 // RTM_NEWADDR for each of its addresses (only family af's, if not 0). With old NULL, *oldlen is set to the size
 // needed; otherwise the messages that fit go into old and *oldlen is set to their size (-ENOMEM if not all fit).
-int ifinfo_iflist(int af, int index, void* old, unsigned long* oldlen);
+// With iflist2, NET_RT_IFLIST2 (sysctl_iflist2()): the same, with RTM_IFINFO2 (if_msghdr2, 64-bit if_data64
+// counters) for each interface.
+int ifinfo_iflist(int af, int index, int iflist2, void* old, unsigned long* oldlen);
 
 #endif // NETWORK_IFINFO_H

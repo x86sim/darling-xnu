@@ -46,6 +46,10 @@ static void link_attr(const struct linux_rtattr* attr, const void* data, int len
 		if (len == 4)
 			memcpy(&info->mtu, data, 4);
 		break;
+	case LINUX_IFLA_TXQLEN:
+		if (len == 4)
+			memcpy(&info->txqlen, data, 4);
+		break;
 	case LINUX_IFLA_STATS64:
 		if (len < (int) sizeof(s))
 			break;
@@ -64,6 +68,7 @@ static void link_attr(const struct linux_rtattr* attr, const void* data, int len
 		info->ierrors = s[4];
 		info->oerrors = s[5];
 		info->iqdrops = s[6];
+		info->odrops = s[7];
 		info->imcasts = s[8];
 		info->collisions = s[9];
 		break;
@@ -180,38 +185,53 @@ static void put(struct iflist_out* out, const void* msg, unsigned long len)
 	out->used += len;
 }
 
-static void put_link(struct iflist_out* out, const struct ifinfo* info)
+// if_data and if_data64 share their field names; only the counters' widths differ
+#define FILL_IF_DATA(d, info, sdl) do { \
+	(d).ifi_type = ift_type(info); \
+	(d).ifi_addrlen = (sdl)->sdl_alen; \
+	(d).ifi_hdrlen = (info)->arphrd == LINUX_ARPHRD_ETHER ? 14 : 0; \
+	(d).ifi_mtu = (info)->mtu; \
+	(d).ifi_ipackets = (info)->ipackets; \
+	(d).ifi_opackets = (info)->opackets; \
+	(d).ifi_ibytes = (info)->ibytes; \
+	(d).ifi_obytes = (info)->obytes; \
+	(d).ifi_ierrors = (info)->ierrors; \
+	(d).ifi_oerrors = (info)->oerrors; \
+	(d).ifi_iqdrops = (info)->iqdrops; \
+	(d).ifi_imcasts = (info)->imcasts; \
+	(d).ifi_collisions = (info)->collisions; \
+} while (0)
+
+static void put_link(struct iflist_out* out, const struct ifinfo* info, int iflist2)
 {
 	union {
 		struct if_msghdr ifm;
-		unsigned char bytes[sizeof(struct if_msghdr) + 128];
+		struct if_msghdr2 ifm2;
+		unsigned char bytes[sizeof(struct if_msghdr2) + 128];
 	} msg;
-	struct if_msghdr* ifm = &msg.ifm;
+	unsigned long hdr_len = iflist2 ? sizeof(struct if_msghdr2) : sizeof(struct if_msghdr);
+	struct sockaddr_dl* sdl = (void*) (msg.bytes + hdr_len);
 
 	memset(&msg, 0, sizeof(msg));
-	int dl_len = ifinfo_link_sockaddr(info, (void*) (ifm + 1), 128);
+	int dl_len = ifinfo_link_sockaddr(info, sdl, 128);
 	if (dl_len < 0)
 		return;
-	ifm->ifm_msglen = sizeof(*ifm) + ROUNDUP32(dl_len);
-	ifm->ifm_version = RTM_VERSION;
-	ifm->ifm_type = RTM_IFINFO;
-	ifm->ifm_addrs = RTA_IFP;
-	ifm->ifm_flags = bsd_flags(info);
-	ifm->ifm_index = info->index;
-	ifm->ifm_data.ifi_type = ift_type(info);
-	ifm->ifm_data.ifi_addrlen = ((struct sockaddr_dl*) (ifm + 1))->sdl_alen;
-	ifm->ifm_data.ifi_hdrlen = info->arphrd == LINUX_ARPHRD_ETHER ? 14 : 0;
-	ifm->ifm_data.ifi_mtu = info->mtu;
-	ifm->ifm_data.ifi_ipackets = info->ipackets;
-	ifm->ifm_data.ifi_opackets = info->opackets;
-	ifm->ifm_data.ifi_ibytes = info->ibytes;
-	ifm->ifm_data.ifi_obytes = info->obytes;
-	ifm->ifm_data.ifi_ierrors = info->ierrors;
-	ifm->ifm_data.ifi_oerrors = info->oerrors;
-	ifm->ifm_data.ifi_iqdrops = info->iqdrops;
-	ifm->ifm_data.ifi_imcasts = info->imcasts;
-	ifm->ifm_data.ifi_collisions = info->collisions;
-	put(out, &msg, ifm->ifm_msglen);
+	// the header fields up to ifm_index are laid out alike in both
+	msg.ifm.ifm_msglen = hdr_len + ROUNDUP32(dl_len);
+	msg.ifm.ifm_version = RTM_VERSION;
+	msg.ifm.ifm_type = iflist2 ? RTM_IFINFO2 : RTM_IFINFO;
+	msg.ifm.ifm_addrs = RTA_IFP;
+	msg.ifm.ifm_flags = bsd_flags(info);
+	msg.ifm.ifm_index = info->index;
+	if (iflist2) {
+		// XNU: the send queue's (IFCQ) length, limit and drops; Linux's txqueuelen and tx_dropped
+		msg.ifm2.ifm_snd_maxlen = info->txqlen;
+		msg.ifm2.ifm_snd_drops = info->odrops;
+		FILL_IF_DATA(msg.ifm2.ifm_data, info, sdl);
+	} else {
+		FILL_IF_DATA(msg.ifm.ifm_data, info, sdl);
+	}
+	put(out, &msg, msg.ifm.ifm_msglen);
 }
 
 struct addr {
@@ -343,7 +363,7 @@ static int got_link_index(const struct linux_nlmsghdr* msg, void* context)
 }
 
 
-int ifinfo_iflist(int af, int index, void* old, unsigned long* oldlen)
+int ifinfo_iflist(int af, int index, int iflist2, void* old, unsigned long* oldlen)
 {
 	struct iflist_out out = { .old = old, .size = old ? *oldlen : 0 };
 	struct link_walk links = { .count = 0 };
@@ -370,7 +390,7 @@ int ifinfo_iflist(int af, int index, void* old, unsigned long* oldlen)
 			continue;
 		if (ifinfo_get(nl, links.indexes[i], &link) < 0)
 			continue; // gone since the dump
-		put_link(&out, &link);
+		put_link(&out, &link, iflist2);
 		if (af < 0)
 			continue;
 
