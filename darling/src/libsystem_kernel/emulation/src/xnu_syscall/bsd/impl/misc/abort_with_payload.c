@@ -22,19 +22,6 @@ long sys_abort_with_payload(unsigned int reason_namespace, unsigned long long re
 
 long sys_terminate_with_payload(int pid, unsigned int reason_namespace, unsigned long long reason_code, void *payload, unsigned int payload_size, const char *reason_string, unsigned long long reason_flags)
 {
-	// Unlike kill(), this syscall accepts only a positive process ID.
-	// Match terminate_with_payload_internal before reading the reason string.
-	if (pid <= 0)
-		return -EINVAL;
-
-	__simple_printf("terminate_with_payload: pid=%d reason: %s; code: %llu\n",
-	                pid, reason_string ? reason_string : "(null)", reason_code);
-	// sys_kill already translates Linux failures to negative Darwin errno.
-	return sys_kill(pid, SIGKILL, 1);
-}
-
-long sys_terminate_with_payload(int pid, unsigned int reason_namespace, unsigned long long reason_code, void *payload, unsigned int payload_size, const char *reason_string, unsigned long long reason_flags)
-{
 	// XNU: pid must name one other process (no groups); its kill() checks apply
 	if (pid <= 0)
 		return -EINVAL;

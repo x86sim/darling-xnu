@@ -25,7 +25,6 @@ long sys_flistxattr(int fd, char* namebuf, unsigned long size, int options)
 	int ret;
 
 	struct linux_stat st;
-	char lbuf[16384];
 	ret = LINUX_SYSCALL(STAT_CALL, fd, &st);
 	if (ret < 0)
 		return errno_linux_to_bsd(ret);

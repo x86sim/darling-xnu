@@ -139,6 +139,8 @@ static long fcntl_lock_timeout(int fd, int cmd, struct bsd_flocktimeout* ft)
 		if (wait_ns < 10000000)
 			wait_ns *= 2;
 	}
+}
+
 // F_ADDFILESIGS, F_ADDFILESIGS_RETURN: darlingserver reads the signature of
 // the Mach-O image at `fs_file_start` itself. Only a policy that enforces
 // code signing refuses an image whose signature is not valid; otherwise
@@ -442,10 +444,6 @@ long sys_fcntl_nocancel(int fd, int cmd, long arg)
 		// journal (searchd) sets it and took the EINVAL as a failed journal write ("TOC update FAILED err=22").
 		case 76:
 			return 0;
-		case 48: // F_NOCACHE
-			if (arg)
-				LINUX_SYSCALL(__NR_fadvise64, fd, 0, 0, 4 /* POSIX_FADV_DONTNEED */);
-			return 0;
 		// F_BARRIERFSYNC: the writes before it reach the disk before those after: fdatasync gives at least that
 		case 85:
 			ret = LINUX_SYSCALL1(__NR_fdatasync, fd);
@@ -481,6 +479,9 @@ long sys_fcntl_nocancel(int fd, int cmd, long arg)
 #endif
 			if (ret < 0)
 				return errno_linux_to_bsd(ret);
+			// x86Sim: drop what is cached so far
+			if (arg)
+				LINUX_SYSCALL(__NR_fadvise64, fd, 0, 0, 4 /* POSIX_FADV_DONTNEED */);
 			return 0;
 		}
 		case F_GETPROTECTIONCLASS:

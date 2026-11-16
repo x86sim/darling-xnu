@@ -507,7 +507,7 @@ out:
 
 // x86Sim: proc_info_extended_id (545): proc_info for a pid, optionally checked against
 // a unique id; the id is not checked here.
-long sys_proc_info_extended_id(int32_t callnum, int32_t pid, uint32_t flavor, uint32_t flags,
+long sys_proc_info_extended_id(uint32_t callnum, int32_t pid, uint32_t flavor, uint32_t flags,
 		uint64_t ext_id, uint64_t arg, void* buffer, int32_t buffersize)
 {
 	return sys_proc_info(callnum, pid, flavor, arg, buffer, buffersize);

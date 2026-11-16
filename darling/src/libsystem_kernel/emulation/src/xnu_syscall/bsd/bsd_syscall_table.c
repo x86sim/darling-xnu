@@ -246,7 +246,6 @@ long sys_x86sim_process_policy(int scope, int action, int policy, int subtype, v
 long sys_x86sim_proc_rlimit_control(int pid, int flavor, void* arg); // x86Sim Align 1
 long sys_x86sim_telemetry(void); // x86Sim Align 1
 long sys_kqueue_workloop_ctl(unsigned long cmd, uint64_t options, void* addr, unsigned long sz); // x86Sim
-long sys_proc_info_extended_id(int32_t callnum, int32_t pid, uint32_t flavor, uint32_t flags, uint64_t ext_id, uint64_t arg, void* buffer, int32_t buffersize); // x86Sim
 
 void* __bsd_syscall_table[BSD_SYSCALL_TABLE_SIZE] = {
 	[0] = sys_syscall,

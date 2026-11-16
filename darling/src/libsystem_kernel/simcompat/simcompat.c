@@ -114,25 +114,7 @@ EXPORT int openat_authenticated_np(int fd, const char* path, int oflag, int auth
 	return openat(fd, path, oflag, 0);
 }
 
-EXPORT int mkfifoat(int fd, const char* path, mode_t mode)
-{
-	if (fd != SIM_AT_FDCWD && path[0] != '/')
-	{
-		*__error() = ENOTSUP;
-		return -1;
-	}
-	return mkfifo(path, mode);
-}
-
-EXPORT int mknodat(int fd, const char* path, mode_t mode, dev_t dev)
-{
-	if (fd != SIM_AT_FDCWD && path[0] != '/')
-	{
-		*__error() = ENOTSUP;
-		return -1;
-	}
-	return mknod(path, mode, dev);
-}
+// mkfifoat and mknodat are real syscalls now (553, 554; libsyscall's _mkfifoat.S / _mknodat.S, upstream Darling)
 
 // x86Sim: kept in the attributes for the child (emulation process/posix_spawn.c, helper/misc/dataless.c): launchd's
 // xpcproxy gives apps "dataless file mode" (ON) and other jobs OFF
