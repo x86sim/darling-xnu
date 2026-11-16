@@ -101,6 +101,10 @@ long sys_getsockopt(int fd, int level, int optname, void* optval, int* optlen)
 	// x86Sim: answered as XNU does (sockextra.h)
 	if (level == BSD_SOL_SOCKET && optname == BSD_SO_CONNECTION_IDLE)
 		return sockextra_get_idle(fd, optval, optlen);
+	if (level == BSD_SOL_SOCKET && (optname == BSD_SO_TRAFFIC_CLASS || optname == BSD_SO_RECV_TRAFFIC_CLASS || optname == BSD_SO_NET_SERVICE_TYPE))
+		return sockextra_get_tc(fd, optname, optval, optlen);
+	if ((level == BSD_SOL_SOCKET && optname == BSD_SO_RECV_ANYIF) || (level == 0 && (optname == BSD_IP_RECVIF || optname == BSD_IP_RECVDSTADDR_OPT)))
+		return sockextra_get_flag(fd, level, optname, optval, optlen);
 	if (level == BSD_SOL_SOCKET && optname == BSD_SO_DEFUNCTOK)
 		return int_option(1, optval, optlen); // XNU: !(so_flags & SOF_NODEFUNCT)
 	if ((level == 0 && optname == BSD_IP_OUT_IF) || (level == 41 && optname == BSD_IPV6_OUT_IF))

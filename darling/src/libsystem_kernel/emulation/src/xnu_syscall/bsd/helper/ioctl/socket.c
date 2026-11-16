@@ -14,7 +14,10 @@ int handle_socket(int fd, unsigned int cmd, void* arg, int* retval)
 	switch (cmd)
 	{
 		// TODO: This has to be implemented for container with separate networking
+		// x86Sim: read (sockextra.h)
 		case SIOCGIFFLAGS:
+			*retval = sockextra_ifflags(fd, arg);
+			return IOCTL_HANDLED;
 		case SIOCSIFFLAGS:
 		case SIOCAIFADDR: // set IPv4 address
 		case SIOCAIFADDR_IN6: // set IPv6 address

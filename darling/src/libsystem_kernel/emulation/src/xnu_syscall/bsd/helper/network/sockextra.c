@@ -175,10 +175,152 @@ long sockextra_get_idle(int fd, void* optval, int* optlen)
 	return 0;
 }
 
+// traffic class state per descriptor: the class (SO_TC_*, 0 = SO_TC_BE, XNU's default), the network service type it
+// came from (-1: none, SO_NET_SERVICE_TYPE reads NET_SERVICE_TYPE_BE then) and the SO_RECV_TRAFFIC_CLASS flag
+#define SO_TC_NET_SERVICE_OFFSET 10000
+#define NET_SERVICE_TYPE_RD 8
+static short tc_class[IDLE_FDS];
+static signed char tc_svc[IDLE_FDS];
+static unsigned char tc_recv[IDLE_FDS / 8];
+static unsigned char tc_svc_set[IDLE_FDS / 8];
+// XNU's sotc_by_netservicetype[] (uipc_socket.c): NET_SERVICE_TYPE_BE..RD -> SO_TC_*
+static const short tc_by_svc[NET_SERVICE_TYPE_RD + 1] = { 0, 200, 600, 700, 700, 800, 500, 400, 300 };
+
+static int tc_sock(int fd)
+{
+	int d = l_domain(fd);
+	return d < 0 ? -ENOTSOCK : 0;
+}
+
+long sockextra_set_tc(int fd, int optname, const void* optval, int optlen)
+{
+	int r = tc_sock(fd);
+	if (r < 0)
+		return r;
+	if (optval == NULL || optlen < (int) sizeof(int))
+		return -EINVAL;
+	int v = *(const int*) optval;
+	if (fd < 0 || fd >= IDLE_FDS)
+		return 0;
+	if (optname == BSD_SO_RECV_TRAFFIC_CLASS) {
+		if (v) tc_recv[fd / 8] |= (unsigned char) (1 << (fd % 8));
+		else tc_recv[fd / 8] &= (unsigned char) ~(1 << (fd % 8));
+		return 0;
+	}
+	int svc = -1;
+	if (optname == BSD_SO_NET_SERVICE_TYPE)
+		svc = v;
+	else if (v >= SO_TC_NET_SERVICE_OFFSET)
+		svc = v - SO_TC_NET_SERVICE_OFFSET;
+	if (svc >= 0 || optname == BSD_SO_NET_SERVICE_TYPE) {
+		if (svc < 0 || svc > NET_SERVICE_TYPE_RD)
+			return -EINVAL;
+		tc_class[fd] = tc_by_svc[svc];
+		tc_svc[fd] = (signed char) svc;
+		tc_svc_set[fd / 8] |= (unsigned char) (1 << (fd % 8));
+		return 0;
+	}
+	// so_set_traffic_class(): SO_TC_BE (0) .. SO_TC_CTL (900); in-between values round to their class (so_tc2msc)
+	if (v < 0 || v > 900)
+		return -EINVAL;
+	tc_class[fd] = (short) (v / 100 * 100);
+	tc_svc_set[fd / 8] &= (unsigned char) ~(1 << (fd % 8));
+	return 0;
+}
+
+long sockextra_get_tc(int fd, int optname, void* optval, int* optlen)
+{
+	int r = tc_sock(fd);
+	if (r < 0)
+		return r;
+	if (optlen == NULL)
+		return -EFAULT;
+	int v = 0;
+	if (fd >= 0 && fd < IDLE_FDS) {
+		if (optname == BSD_SO_RECV_TRAFFIC_CLASS)
+			v = !!(tc_recv[fd / 8] & (1 << (fd % 8)));
+		else if (optname == BSD_SO_NET_SERVICE_TYPE)
+			v = (tc_svc_set[fd / 8] & (1 << (fd % 8))) ? tc_svc[fd] : 0;
+		else
+			v = tc_class[fd];
+	}
+	if (optval == NULL) { *optlen = 0; return 0; }
+	int n = *optlen < (int) sizeof(v) ? *optlen : (int) sizeof(v);
+	if (n < 0)
+		return -EINVAL;
+	for (int i = 0; i < n; i++) ((char*) optval)[i] = ((char*) &v)[i];
+	*optlen = n;
+	return 0;
+}
+
+static unsigned char anyif_flags[IDLE_FDS / 8], recvif_flags[IDLE_FDS / 8], recvdst_flags[IDLE_FDS / 8], pktinfo_user[IDLE_FDS / 8];
+#define BIT(a, fd) ((fd) >= 0 && (fd) < IDLE_FDS && ((a)[(fd) / 8] & (1 << ((fd) % 8))))
+static void setbit_(unsigned char* a, int fd, int on)
+{
+	if (fd < 0 || fd >= IDLE_FDS) return;
+	if (on) a[fd / 8] |= (unsigned char) (1 << (fd % 8));
+	else a[fd / 8] &= (unsigned char) ~(1 << (fd % 8));
+}
+
+void sockextra_note_pktinfo(int fd, int on) { setbit_(pktinfo_user, fd, on); }
+int sockextra_recvif(int fd) { return BIT(recvif_flags, fd) ? 1 : 0; }
+int sockextra_pktinfo_user(int fd) { return BIT(pktinfo_user, fd) ? 1 : 0; }
+int sockextra_recvdst(int fd) { return BIT(recvdst_flags, fd) ? 1 : 0; }
+
+long sockextra_set_flag(int fd, int level, int optname, const void* optval, int optlen)
+{
+	int d = l_domain(fd);
+	if (d < 0)
+		return -ENOTSOCK;
+	if (optval == NULL || optlen < (int) sizeof(int))
+		return -EINVAL;
+	int on = *(const int*) optval != 0;
+	if (level == 0 && (optname == BSD_IP_RECVIF || optname == BSD_IP_RECVDSTADDR_OPT)) {
+		if (d != L_AF_INET && d != L_AF_INET6)
+			return -EINVAL;
+		// Linux IP_PKTINFO (8) carries the index and the destination; on while any of the three options is
+		int other = optname == BSD_IP_RECVIF ? BIT(recvdst_flags, fd) : BIT(recvif_flags, fd);
+		int v = on || other || BIT(pktinfo_user, fd);
+#ifdef __NR_socketcall
+		long r = LINUX_SYSCALL(__NR_socketcall, LINUX_SYS_SETSOCKOPT, ((long[6]) { fd, 0, 8, &v, sizeof(v), 0 }));
+#else
+		long r = LINUX_SYSCALL(__NR_setsockopt, fd, 0, 8, &v, sizeof(v));
+#endif
+		if (r < 0)
+			return errno_linux_to_bsd(r);
+		setbit_(optname == BSD_IP_RECVIF ? recvif_flags : recvdst_flags, fd, on);
+		return 0;
+	}
+	setbit_(anyif_flags, fd, on); // SO_RECV_ANYIF
+	return 0;
+}
+
+long sockextra_get_flag(int fd, int level, int optname, void* optval, int* optlen)
+{
+	if (l_domain(fd) < 0)
+		return -ENOTSOCK;
+	if (optlen == NULL)
+		return -EFAULT;
+	int v = (level == 0 && optname == BSD_IP_RECVIF) ? sockextra_recvif(fd)
+		: (level == 0 && optname == BSD_IP_RECVDSTADDR_OPT) ? sockextra_recvdst(fd) : (BIT(anyif_flags, fd) ? 1 : 0);
+	if (optval == NULL) { *optlen = 0; return 0; }
+	int n = *optlen < (int) sizeof(v) ? *optlen : (int) sizeof(v);
+	if (n < 0)
+		return -EINVAL;
+	for (int i = 0; i < n; i++) ((char*) optval)[i] = ((char*) &v)[i];
+	*optlen = n;
+	return 0;
+}
+
 void sockextra_closed(int fd)
 {
-	if (fd >= 0 && fd < IDLE_FDS)
+	setbit_(anyif_flags, fd, 0); setbit_(recvif_flags, fd, 0); setbit_(recvdst_flags, fd, 0); setbit_(pktinfo_user, fd, 0);
+	if (fd >= 0 && fd < IDLE_FDS) {
 		idle_flags[fd / 8] &= (unsigned char) ~(1 << (fd % 8));
+		tc_class[fd] = 0;
+		tc_recv[fd / 8] &= (unsigned char) ~(1 << (fd % 8));
+		tc_svc_set[fd / 8] &= (unsigned char) ~(1 << (fd % 8));
+	}
 }
 
 // XNU's struct so_cinforeq (64-bit user), bsd/sys/socket_private.h
@@ -298,6 +440,29 @@ long sockextra_mtu(int fd, void* arg)
 	if (r < 0)
 		return errno_linux_to_bsd(r);
 	*(int*) (ifr + 16) = q.mtu;
+	return 0;
+}
+
+#define L_SIOCGIFFLAGS 0x8913
+long sockextra_ifflags(int fd, void* arg)
+{
+	struct { char name[16]; union { short flags; struct { uint16_t family; char data[14]; } hw; char pad[24]; }; } q;
+	char* ifr = arg;
+	memset(&q, 0, sizeof(q));
+	for (int i = 0; i < 15 && ifr[i]; i++) q.name[i] = ifr[i];
+	long r = LINUX_SYSCALL(__NR_ioctl, fd, L_SIOCGIFFLAGS, &q);
+	if (r < 0)
+		return errno_linux_to_bsd(r);
+	unsigned int lf = (unsigned short) q.flags;
+	// the low ten bits are Darwin's too except 0x400 (Linux IFF_MASTER, Darwin IFF_OACTIVE); IFF_MULTICAST 0x1000 -> 0x8000
+	unsigned int f = lf & 0x3ff;
+	if (lf & 0x1000)
+		f |= 0x8000;
+	memset(&q, 0, sizeof(q));
+	for (int i = 0; i < 15 && ifr[i]; i++) q.name[i] = ifr[i];
+	if (LINUX_SYSCALL(__NR_ioctl, fd, L_SIOCGIFHWADDR, &q) >= 0 && q.hw.family == L_ARPHRD_ETHER)
+		f |= 0x800; // IFF_SIMPLEX: an Ethernet interface can't hear its own transmissions, as Darwin's say
+	*(short*) (ifr + 16) = (short) f;
 	return 0;
 }
 

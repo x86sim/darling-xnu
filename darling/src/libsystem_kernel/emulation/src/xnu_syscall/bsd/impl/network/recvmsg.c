@@ -12,6 +12,7 @@
 #include <darling/emulation/xnu_syscall/bsd/helper/network/sostate.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/network/getsockopt.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/bsdthread/cancelable.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/network/sockextra.h>
 
 extern void *malloc(__SIZE_TYPE__ size);
 extern void free(void* ptr);
@@ -86,6 +87,10 @@ long sys_recvmsg_nocancel(int socket, struct bsd_msghdr* msg, int flags)
 				int lpos = 0, bpos = 0;
 				struct linux_cmsghdr* lnext;
 				struct bsd_cmsghdr* bnext;
+				// x86Sim: IP_RECVIF (sockextra.h) from Linux's IP_PKTINFO; the IP_PKTINFO message itself only if
+				// the program asked for it
+				int recvif = sockextra_recvif(socket), recvdst = sockextra_recvdst(socket), pktuser = sockextra_pktinfo_user(socket);
+				unsigned int bcap = msg->msg_controllen;
 
 				msg->msg_controllen = lmsg.msg_controllen;
 
@@ -94,6 +99,39 @@ long sys_recvmsg_nocancel(int socket, struct bsd_msghdr* msg, int flags)
 				{
 					lnext = (struct linux_cmsghdr*) (((char*) lmsg.msg_control) + lpos);
 					bnext = (struct bsd_cmsghdr*) (((char*) msg->msg_control) + bpos);
+
+					if ((recvif || recvdst) && lnext->cmsg_level == 0 && lnext->cmsg_type == LINUX_IP_PKTINFO
+					    && lnext->cmsg_len >= sizeof(struct linux_cmsghdr) + 12) {
+						// XNU's ip_savecontrol() order: IP_RECVDSTADDR, then IP_RECVIF
+						if (recvdst && bpos + BSD_CMSG_SPACE(4) <= bcap) {
+							bnext->cmsg_len = BSD_CMSG_LEN(4);
+							bnext->cmsg_level = 0;
+							bnext->cmsg_type = BSD_IP_RECVDSTADDR_OPT;
+							memcpy(bnext->cmsg_data, lnext->cmsg_data + 8, 4); // in_pktinfo.ipi_addr: the header's destination
+							bpos += BSD_CMSG_SPACE(4);
+							bnext = (struct bsd_cmsghdr*) (((char*) msg->msg_control) + bpos);
+						}
+						int ifindex = *(const int*) lnext->cmsg_data; // struct in_pktinfo: ipi_ifindex first
+						// XNU's ip_savecontrol(): a struct sockaddr_dl (20 bytes) of the interface; only its index
+						// here (sdl_nlen / sdl_alen 0, as XNU sends when the interface has no link address)
+						unsigned char sdl[20] = { 20, 18 /* AF_LINK */ };
+						sdl[2] = (unsigned char) ifindex; sdl[3] = (unsigned char) (ifindex >> 8);
+						if (recvif && bpos + BSD_CMSG_SPACE(sizeof(sdl)) <= bcap) {
+							struct bsd_cmsghdr* r = bnext;
+							r->cmsg_len = BSD_CMSG_LEN(sizeof(sdl));
+							r->cmsg_level = 0;
+							r->cmsg_type = BSD_IP_RECVIF;
+							memcpy(r->cmsg_data, sdl, sizeof(sdl));
+							bpos += BSD_CMSG_SPACE(sizeof(sdl));
+						}
+						if (!pktuser) {
+							lpos += ALIGN(lnext->cmsg_len, sizeof(unsigned long));
+							continue;
+						}
+						bnext = (struct bsd_cmsghdr*) (((char*) msg->msg_control) + bpos);
+						if (bpos + BSD_CMSG_SPACE(lnext->cmsg_len - sizeof(struct linux_cmsghdr)) > bcap)
+							break;
+					}
 
 					// __simple_printf("Linux msg at %d -> BSD at %d\n", lpos, bpos);
 
@@ -110,6 +148,8 @@ long sys_recvmsg_nocancel(int socket, struct bsd_msghdr* msg, int flags)
 					lpos += ALIGN(lnext->cmsg_len, sizeof(unsigned long));
 					bpos += ALIGN(bnext->cmsg_len, 4);
 				}
+				if (recvif || recvdst)
+					msg->msg_controllen = bpos; // the messages as written (the size arithmetic above assumes 1:1)
 			}
 			else
 			{
