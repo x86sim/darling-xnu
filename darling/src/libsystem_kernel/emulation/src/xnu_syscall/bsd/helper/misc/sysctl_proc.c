@@ -40,6 +40,7 @@ extern char* strcpy(char* dst, const char* src);
 extern void* memset(void*, int, __SIZE_TYPE__);
 extern void* memcpy(void* dest, const void*, __SIZE_TYPE__);
 extern char *strncpy(char *dest, const char *src, __SIZE_TYPE__ n);
+extern char *strrchr(const char *s, int c);
 
 int _sysctl_proc(int what, int flag, struct kinfo_proc* out, unsigned long* buflen)
 {
@@ -171,9 +172,17 @@ bool darling_proc_name(int pid, const char* comm, char* dst, int maxlen)
 	return i > 0;
 }
 
+/*
+ * Returns the next field of a /proc/<pid>/stat line and advances *buf past it, or NULL at the end. Field 2 (comm)
+ * is in parentheses and may itself contain spaces and parentheses (proc(5); fs/proc/array.c prints it raw), so it
+ * ends at the LAST ')' in the line: no later field can contain one. Never steps past the terminating NUL.
+ */
 const char* next_stat_elem(char** buf)
 {
-	char* start;
+	char *start, *end;
+
+	if (buf == NULL || *buf == NULL)
+		return NULL;
 
 	start = *buf;
 
@@ -181,25 +190,26 @@ const char* next_stat_elem(char** buf)
 		return NULL;
 	else if (*start == '(')
 	{
-		char* end;
-
 		start++;
-		end = start;
-
-		while (*end != ')' && *end)
+		end = strrchr(start, ')');
+		if (end == NULL)
+		{
+			*buf = start + strlen(start);
+			return NULL;
+		}
+		*end++ = '\0';
+		if (*end == ' ')
 			end++;
-		*end = '\0';
-		*buf = end+2;
+		*buf = end;
 	}
 	else
 	{
-		char* end;
-
 		end = start;
 		while (*end != ' ' && *end)
 			end++;
-		*end = '\0';
-		*buf = end+1;
+		if (*end)
+			*end++ = '\0';
+		*buf = end;
 	}
 
 	// __simple_printf("Next stat elem: %s\n", start);
@@ -246,7 +256,8 @@ static struct kinfo_proc_chain* load_proc(const char* name, int what, int flag)
 
 	// comm
 	READELEM();
-	strncpy(kinfo->kinfo.kp_proc.p_comm, elem, sizeof(kinfo->kinfo.kp_proc.p_comm));
+	strncpy(kinfo->kinfo.kp_proc.p_comm, elem, sizeof(kinfo->kinfo.kp_proc.p_comm) - 1);
+	kinfo->kinfo.kp_proc.p_comm[sizeof(kinfo->kinfo.kp_proc.p_comm) - 1] = '\0';
 	darling_proc_name(kinfo->kinfo.kp_proc.p_pid, elem, kinfo->kinfo.kp_proc.p_comm, sizeof(kinfo->kinfo.kp_proc.p_comm)); // x86Sim
 
 	// process state
@@ -293,7 +304,7 @@ static struct kinfo_proc_chain* load_proc(const char* name, int what, int flag)
 	if (kinfo->kinfo.kp_eproc.e_tdev != 0)
 		kinfo->kinfo.kp_proc.p_flag |= P_CONTROLT;
 
-	skip_stat_elems(&statptr, NULL);
+	skip_stat_elems(&statptr, 10); // tpgid flags minflt cminflt majflt cmajflt utime stime cutime cstime
 
 	READELEM();
 	kinfo->kinfo.kp_proc.p_priority = __simple_atoi(elem, NULL);
