@@ -125,7 +125,21 @@ long sys_getfsstat64(struct bsd_statfs64* buf, int bufsize, int flags)
 #endif
 				continue;
 
-			statfs_linux_to_bsd64(&lbuf, &buf[count]);
+			{
+				// x86Sim: statfs_linux_to_bsd64 clears the whole structure (upstream, 2026-11): keep the names
+				// filled above. Without them every entry read "/Volumes/SystemRoot" with no source or type, the
+				// guest's "/" had no entry, and CoreServicesInternal's volume lookups failed (a file reference URL
+				// of "/" recursed through its parents until the stack overflowed: DocumentManager.Service).
+				char from[sizeof(buf[count].f_mntfromname)], on[sizeof(buf[count].f_mntonname)],
+					type[sizeof(buf[count].f_fstypename)];
+				__builtin_memcpy(from, buf[count].f_mntfromname, sizeof(from));
+				__builtin_memcpy(on, buf[count].f_mntonname, sizeof(on));
+				__builtin_memcpy(type, buf[count].f_fstypename, sizeof(type));
+				statfs_linux_to_bsd64(&lbuf, &buf[count]);
+				__builtin_memcpy(buf[count].f_mntfromname, from, sizeof(from));
+				__builtin_memcpy(buf[count].f_mntonname, on, sizeof(on));
+				__builtin_memcpy(buf[count].f_fstypename, type, sizeof(type));
+			}
 			{
 				// x86Sim: f_fsid = { st_dev, 0 } as in statfs/fstatfs: CFURL finds a file's volume
 				// (NSURLVolumeURLKey) by matching its fsid against this table.
