@@ -37,6 +37,9 @@ long sys_renameat(int oldfd, const char* oldpath, int newfd, const char* newpath
 	// x86Sim: IDs handed out for the object (fsgetpath, bookmarks) follow it to its new path
 	struct fsgp_rename fr;
 	fsgetpath_rename_prepare(vc.dfd, vc.path, &fr);
+	// x86Sim: and a tracked item replaced by the rename hands its document id (and tracking) to the one taking its path
+	struct fsgp_docid dd;
+	fsgetpath_docid_prepare(vc2.dfd, vc2.path, &dd);
 
 	ret = LINUX_SYSCALL(__NR_renameat, vc.dfd, vc.path, vc2.dfd, vc2.path);
 
@@ -44,6 +47,7 @@ long sys_renameat(int oldfd, const char* oldpath, int newfd, const char* newpath
 		return errno_linux_to_bsd(ret);
 
 	fsgetpath_rename_done(vc2.dfd, vc2.path, &fr);
+	fsgetpath_docid_done(vc2.dfd, vc2.path, &dd);
 	return 0;
 }
 
@@ -97,13 +101,27 @@ long sys_renameatx_np(int oldfd, const char* oldpath, int newfd, const char* new
 	if (lflags == LINUX_RENAME_EXCHANGE)
 		fsgetpath_rename_prepare(vc2.dfd, vc2.path, &fr2);
 
+	// x86Sim: document ids and tracking stay with the paths, as APFS keeps them (checked on a Mac): a rename over a
+	// tracked item, or a swap, gives the item now at a path the id the path's item had
+	struct fsgp_docid d1, d2;
+	d1.docid = 0;
+	fsgetpath_docid_prepare(vc2.dfd, vc2.path, &d2);
+	if (lflags == LINUX_RENAME_EXCHANGE)
+		fsgetpath_docid_prepare(vc.dfd, vc.path, &d1);
+
 	ret = LINUX_SYSCALL(__NR_renameat2, vc.dfd, vc.path, vc2.dfd, vc2.path, lflags);
 	if (ret < 0)
 		return errno_linux_to_bsd(ret);
 
 	if (lflags == LINUX_RENAME_EXCHANGE)
+	{
 		fsgetpath_rename_swap_done(vc2.dfd, vc2.path, &fr, vc.dfd, vc.path, &fr2);
+		fsgetpath_docid_drop(vc.dfd, vc.path, &d2, &d1);
+		fsgetpath_docid_drop(vc2.dfd, vc2.path, &d1, &d2);
+		fsgetpath_docid_done(vc.dfd, vc.path, &d1);
+	}
 	else
 		fsgetpath_rename_done(vc2.dfd, vc2.path, &fr);
+	fsgetpath_docid_done(vc2.dfd, vc2.path, &d2);
 	return 0;
 }

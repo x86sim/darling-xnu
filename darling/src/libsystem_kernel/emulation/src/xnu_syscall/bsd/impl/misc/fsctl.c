@@ -12,6 +12,8 @@
 #include <darling/emulation/xnu_syscall/bsd/helper/misc/bsdflags.h>
 #include <darling/emulation/linux_premigration/vchroot_expand.h>
 #include <darling/emulation/common/bsdthread/per_thread_wd.h>
+#include <darling/emulation/xnu_syscall/bsd/impl/fcntl/open.h>
+#include <darling/emulation/xnu_syscall/bsd/impl/unistd/close.h>
 
 
 /*
@@ -36,6 +38,11 @@
  *   subdirectory failed create-item "Inappropriate ioctl for device" and never appeared in its parent). Computed by
  *   walking the tree (bounded): entries, the files' sizes, the directory's inode as key, and as generation a value
  *   that changes whenever anything below does (the newest ctime).
+ * - _IOWR('J', 68, uint64_t) (0xc0084a44): mark a file purgeable with these APFS purgeable flags, 0 to clear them
+ *   (FileProvider's fpfs_unset_evictable / fpfs_unset_purgeable_at after a download, fpfs_t_set_purgeable_*). Nothing
+ *   purges here: the flags are kept in the xattr host/fpsim2host's sim_markPurgeable writes. Unanswered (ENOTTY),
+ *   fileproviderd took every file it had just materialized for one changed locally: it sent the extension a
+ *   modifyItem of its contents, fetched it again and left it with a 1970 modification date (Files: 12/31/69).
  * - FSIOC_CAS_BSDFLAGS (_IOWR('A', 20, struct fsioc_cas_bsdflags)): compare-and-swap of the chflags flags, kept in an
  *   extended attribute (helper/misc/bsdflags.h). As XNU: the actual flags are returned, and the new ones set only if
  *   they were the expected ones; it succeeds either way. FileProvider's libfssync sets UF_TRACKED with it.
@@ -45,6 +52,8 @@ struct fsioc_cas_bsdflags { uint32_t expected_flags, new_flags, actual_flags; };
 #define APFSIOC_GET_PARENT_SYNCROOT 0x40084a4aul   // names ours; 'J' is APFS's ioctl group
 #define APFSIOC_GET_SYNCROOT        0x40044a48ul
 #define SYNCROOT_XATTR "user.com.apple.x86sim.syncroot"
+#define APFSIOC_MARK_PURGEABLE      0xc0084a44ul
+#define PURGEABLE_XATTR "user.com.apple.x86sim.purgeable"
 
 // the Linux path of lpath (resolving /proc/self/fd/N), in buf
 static int syncroot_realpath(const char* lpath, char* buf, int size)
@@ -181,6 +190,31 @@ static long dirstat_get(const char* lpath, struct apfs_dir_stats_req* req)
 	return 0;
 }
 
+// x86Sim: FSIOC_CAS_BSDFLAGS is atomic on XNU. Ours reads and writes an xattr: two processes changing one file's flags
+// at once (fileproviderd setting UF_TRACKED with it while the simulator host's fpsim2host marks the file SF_DATALESS)
+// could each write back what the other had just replaced, and fileproviderd's UF_TRACKED was lost: the materialized file
+// had no document id, fileproviderd's lookup of it timed out and it fetched the file again (with a 1970 date). The
+// compare-and-swap runs under an exclusive flock on one lock file in the prefix (it is rare: file tracking / dataless
+// marking). Returns the lock's descriptor, or -1 (then unlocked: as before).
+int x86sim_bsdflags_lock(void)
+{
+	int fd = sys_open("/private/var/run/x86sim-bsdflags.lock", 0x0002 /* O_RDWR */ | 0x0200 /* O_CREAT */ | 0x01000000 /* O_CLOEXEC */, 0666);
+	if (fd < 0)
+		return -1;
+	if (LINUX_SYSCALL(__NR_flock, fd, 2 /* LOCK_EX */) < 0)
+	{
+		sys_close(fd);
+		return -1;
+	}
+	return fd;
+}
+
+void x86sim_bsdflags_unlock(int fd)
+{
+	if (fd >= 0)
+		sys_close(fd);   // closing the only descriptor of the open file releases the flock
+}
+
 static long fsctl_common(unsigned long cmd, void* data, const char* lpath)
 {
 	switch (cmd & 0xffffffffu)
@@ -196,13 +230,18 @@ static long fsctl_common(unsigned long cmd, void* data, const char* lpath)
 			struct fsioc_cas_bsdflags* cas = data;
 			if (!cas)
 				return -EFAULT;
+			int lk = x86sim_bsdflags_lock();
 			uint32_t cur = x86sim_bsdflags_get(lpath, 0);
 			if (cur == cas->expected_flags && cur != cas->new_flags)
 			{
 				long r = x86sim_bsdflags_set(lpath, cas->new_flags);
 				if (r < 0)
+				{
+					x86sim_bsdflags_unlock(lk);
 					return errno_linux_to_bsd(r);
+				}
 			}
+			x86sim_bsdflags_unlock(lk);
 			cas->actual_flags = cur;
 			return 0;
 		}
@@ -211,6 +250,17 @@ static long fsctl_common(unsigned long cmd, void* data, const char* lpath)
 				return -EFAULT;
 			*(uint64_t*) data = parent_syncroot(lpath);
 			return 0;
+		case APFSIOC_MARK_PURGEABLE:
+		{
+			if (!data)
+				return -EFAULT;
+			uint64_t flags = *(uint64_t*) data;
+			long r = flags ? LINUX_SYSCALL(__NR_setxattr, lpath, PURGEABLE_XATTR, &flags, sizeof(flags), 0)
+				: LINUX_SYSCALL(__NR_removexattr, lpath, PURGEABLE_XATTR);
+			if (r < 0 && !(flags == 0 && r == -61 /* Linux ENODATA: was not purgeable */))
+				return errno_linux_to_bsd(r);
+			return 0;
+		}
 		case APFSIOC_GET_SYNCROOT:
 			if (!data)
 				return -EFAULT;

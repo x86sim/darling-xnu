@@ -1,3 +1,5 @@
+#include <darling/emulation/linux_premigration/vchroot_expand.h>
+#include <darling/emulation/common/bsdthread/per_thread_wd.h>
 #include <sys/stat.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/misc/fsgetpath.h>
 
@@ -14,6 +16,7 @@
 #include <darling/emulation/conversion/stat/common.h>
 #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/misc/fdpath.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/misc/bsdflags.h>
 
 // x86Sim: XNU resolves (fsid, object ID) to a path in the file system. Linux cannot look up an
 // inode by number, so we answer for the IDs this process has seen through getattrlist
@@ -309,6 +312,95 @@ void fsgetpath_rename_swap_done(int ldfd1, const char* lpath1, const struct fsgp
 	fsgp_renamed(fds, paths, r, 2);
 }
 
+// x86Sim: whether the item at guest path (lstat'ed into st) answers to objid as its document id (bsdflags.h
+// x86sim_docid_get: one a rename handed over is not its inode number)
+static int fsgp_docid_is(const char* path, const struct stat64* st, unsigned long long objid)
+{
+	if (objid > 0xffffffffull || !(st->st_flags & 0x40 /* UF_TRACKED */))
+		return 0;
+	struct vchroot_expand_args vc;
+	vc.flags = 0;
+	vc.dfd = get_perthread_wd();
+	__SIZE_TYPE__ len = __simple_strlen(path);
+	if (len >= sizeof(vc.path))
+		return 0;
+	for (__SIZE_TYPE__ i = 0; i <= len; i++)
+		vc.path[i] = path[i];
+	if (vchroot_expand(&vc) < 0)
+		return 0;
+	char buf[1100];
+	const char* lp = vc.path;
+	if (vc.path[0] != '/' && vc.dfd != -100)
+	{
+		__simple_snprintf(buf, sizeof(buf), "/proc/self/fd/%d/%s", vc.dfd, vc.path);
+		lp = buf;
+	}
+	return x86sim_docid_get(lp, st->st_ino, st->st_flags, 1) == (uint32_t) objid;
+}
+
+// Linux path of (ldfd, lpath) in buf
+static const char* fsgp_lpath(int ldfd, const char* lpath, char* buf, unsigned long size)
+{
+	if (lpath[0] == '/' || ldfd == -100)
+		return lpath;
+	__simple_snprintf(buf, size, "/proc/self/fd/%d/%s", ldfd, lpath);
+	return buf;
+}
+
+void fsgetpath_docid_prepare(int ldfd, const char* lpath, struct fsgp_docid* d)
+{
+	struct linux_stat lst;
+	char buf[1100];
+	d->docid = 0;
+	if (LINUX_SYSCALL(__NR_newfstatat, ldfd, lpath, &lst, FSGP_LINUX_AT_SYMLINK_NOFOLLOW) < 0 || (lst.st_mode & 0170000) == 0120000)
+		return;
+	const char* lp = fsgp_lpath(ldfd, lpath, buf, sizeof(buf));
+	d->dev = (unsigned int) lst.st_dev;
+	d->docid = x86sim_docid_get(lp, lst.st_ino, x86sim_bsdflags_get(lp, 1), 1);
+}
+
+void fsgetpath_docid_done(int ldfd, const char* lpath, const struct fsgp_docid* d)
+{
+	struct linux_stat lst;
+	char buf[1100], gpath[FSGP_PATH];
+	if (LINUX_SYSCALL(__NR_newfstatat, ldfd, lpath, &lst, FSGP_LINUX_AT_SYMLINK_NOFOLLOW) < 0 || (lst.st_mode & 0170000) == 0120000)
+		return;
+	if (!d->docid)
+		return;   // the item that came here takes no id from this path
+	const char* lp = fsgp_lpath(ldfd, lpath, buf, sizeof(buf));
+	int lk = x86sim_bsdflags_lock();
+	uint32_t flags = x86sim_bsdflags_get(lp, 1);
+	if ((uint32_t) lst.st_ino == d->docid)
+		LINUX_SYSCALL(__NR_lremovexattr, lp, X86SIM_DOCID_XATTR);
+	else
+		LINUX_SYSCALL(__NR_lsetxattr, lp, X86SIM_DOCID_XATTR, &d->docid, sizeof(d->docid), 0);
+	if (!(flags & 0x40))
+		x86sim_bsdflags_set(lp, flags | 0x40);
+	x86sim_bsdflags_unlock(lk);
+	if (fsgp_guest_path(ldfd, lpath, gpath, sizeof(gpath)) == 0)
+		fsgetpath_remember(d->dev, d->docid, gpath);
+}
+
+// a RENAME_SWAP sent the item that had docid d away from (ldfd, lpath): it no longer answers to that id
+void fsgetpath_docid_drop(int ldfd, const char* lpath, const struct fsgp_docid* gone, const struct fsgp_docid* kept)
+{
+	struct linux_stat lst;
+	char buf[1100];
+	if (!gone->docid || LINUX_SYSCALL(__NR_newfstatat, ldfd, lpath, &lst, FSGP_LINUX_AT_SYMLINK_NOFOLLOW) < 0 ||
+			(lst.st_mode & 0170000) == 0120000)
+		return;
+	const char* lp = fsgp_lpath(ldfd, lpath, buf, sizeof(buf));
+	if (kept->docid)
+		return;   // it took the other path's id (fsgetpath_docid_done)
+	// untracked there: neither the id it carried nor its inode's
+	int lk = x86sim_bsdflags_lock();
+	uint32_t flags = x86sim_bsdflags_get(lp, 1);
+	LINUX_SYSCALL(__NR_lremovexattr, lp, X86SIM_DOCID_XATTR);
+	if (flags & 0x40)
+		x86sim_bsdflags_set(lp, flags & ~0x40u);
+	x86sim_bsdflags_unlock(lk);
+}
+
 long sys_fsgetpath(const char* buf, unsigned long size, void* fsid, unsigned long long objid)
 {
 	if (!buf || !fsid)
@@ -331,7 +423,7 @@ long sys_fsgetpath(const char* buf, unsigned long size, void* fsid, unsigned lon
 	if (hit[0])
 	{
 		struct stat64 st;
-		if (sys_lstat64(hit, &st) == 0 && (st.st_ino == objid || (objid <= 0xffffffffull && (uint32_t) st.st_ino == objid)) && (unsigned int) st.st_dev == dev)
+		if (sys_lstat64(hit, &st) == 0 && (st.st_ino == objid || (objid <= 0xffffffffull && (uint32_t) st.st_ino == objid) || fsgp_docid_is(hit, &st, objid)) && (unsigned int) st.st_dev == dev)
 		{
 			__SIZE_TYPE__ len = __simple_strlen(hit);
 			if (len + 1 > size)
@@ -360,7 +452,7 @@ long sys_fsgetpath(const char* buf, unsigned long size, void* fsid, unsigned lon
 				struct stat64 st;
 				// still the same object (a writer may have changed the slot meanwhile, inodes get reused); a document id
 				// (getattrlist ATTR_CMN_DOCUMENT_ID) is the inode's low 32 bits
-				if (e->ino == objid && sys_lstat64(tmp, &st) == 0 && (st.st_ino == objid || (objid <= 0xffffffffull && (uint32_t) st.st_ino == objid)) && (unsigned int) st.st_dev == dev)
+				if (e->ino == objid && sys_lstat64(tmp, &st) == 0 && (st.st_ino == objid || (objid <= 0xffffffffull && (uint32_t) st.st_ino == objid) || fsgp_docid_is(tmp, &st, objid)) && (unsigned int) st.st_dev == dev)
 				{
 					if (len + 1 > size)
 						rv = -ENOSPC;

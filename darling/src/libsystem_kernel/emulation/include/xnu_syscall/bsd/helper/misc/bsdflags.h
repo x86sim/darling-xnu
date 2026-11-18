@@ -55,4 +55,28 @@ static inline long x86sim_bsdflags_set(const char* lpath, uint32_t v)
 	return LINUX_SYSCALL(__NR_setxattr, lpath, X86SIM_BSDFLAGS_XATTR, &v, sizeof(v), 0);
 }
 
+// fsctl.c: the lock FSIOC_CAS_BSDFLAGS (and other read-modify-writes of the flags) take, -1 if none
+int x86sim_bsdflags_lock(void);
+void x86sim_bsdflags_unlock(int fd);
+
+// x86Sim: a UF_TRACKED item's document id. APFS keeps it with the document: a tracked file replaced by a rename over
+// it (a safe save, or FileProvider putting a downloaded file in place) or exchanged with RENAME_SWAP hands its id to
+// the file now at its path. Ours starts as the inode number's low 32 bits; an id handed over this way is kept in the
+// extended attribute "user.x86sim.docid" (a u32) of the file that took it (renameat.c). Without the hand-over the id
+// fileproviderd knew a materialized file by stopped resolving ("lookup of docID(...) timed out ... item is stale",
+// "ESTALE: opened wrong doc_id in _validate_file_openbyid"): it fetched the file from the extension again and left it
+// with a 1970 modification date.
+#define X86SIM_DOCID_XATTR "user.x86sim.docid"
+// nofollow: lpath's last component is the item itself (not a /proc/self/fd/N link to it)
+static inline uint32_t x86sim_docid_get(const char* lpath, unsigned long long ino, uint32_t flags, int nofollow)
+{
+	if (!(flags & 0x40 /* UF_TRACKED */))
+		return 0;
+	uint32_t v = 0;
+	long r = LINUX_SYSCALL(nofollow ? __NR_lgetxattr : __NR_getxattr, lpath, X86SIM_DOCID_XATTR, &v, sizeof(v));
+	if (r == sizeof(v) && v)
+		return v;
+	return (uint32_t) ino ? (uint32_t) ino : 1;
+}
+
 #endif

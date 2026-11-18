@@ -615,10 +615,15 @@ struct xnu_attrlist* alist, void *attributeBuffer, __SIZE_TYPE__ bufferSize, uns
 	if (common & ATTR_CMN_DOCUMENT_ID)
 	{
 		// x86Sim: APFS gives a document id to an item once it is UF_TRACKED (chflags, helper/misc/bsdflags.h), and
-		// FileProvider's libfssync waits for it (EAGAIN while it is 0). Ours: the inode number's low 32 bits.
+		// FileProvider's libfssync waits for it (EAGAIN while it is 0). Ours: the inode number's low 32 bits, or the
+		// id a rename handed over (bsdflags.h x86sim_docid_get)
 		uint32_t docid = 0;
 		if (st.st_flags & 0x40 /* UF_TRACKED */)
-			docid = (uint32_t) st.st_ino ? (uint32_t) st.st_ino : 1;
+		{
+			char dpath[32];
+			docid = objfd >= 0 && !S_ISLNK(st.st_mode) ? x86sim_docid_get(x86sim_fd_path(objfd, dpath), st.st_ino, st.st_flags, 0)
+				: ((uint32_t) st.st_ino ? (uint32_t) st.st_ino : 1);
+		}
 		// x86Sim: and resolvable by fsgetpath/openbyid_np, as APFS resolves document ids
 		if (docid && docid != fileid && fullpath[0])
 			fsgetpath_remember((uint32_t) devid, docid, fullpath);
