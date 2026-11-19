@@ -13,15 +13,24 @@
 
 extern void *memcpy(void *dest, const void *src, __SIZE_TYPE__ n);
 
+static long sys_recvfrom_common(int fd, void* buf, unsigned long len,
+		int flags, void* from, int* socklen, bool cancelable);
+
 long sys_recvfrom(int fd, void* buf, unsigned long len,
 		int flags, void* from, int* socklen)
 {
 	CANCELATION_POINT();
-	return sys_recvfrom_nocancel(fd, buf, len, flags, from, socklen);
+	return sys_recvfrom_common(fd, buf, len, flags, from, socklen, true);
 }
 
 long sys_recvfrom_nocancel(int fd, void* buf, unsigned long len,
 		int flags, void* from, int* socklen)
+{
+	return sys_recvfrom_common(fd, buf, len, flags, from, socklen, false);
+}
+
+static long sys_recvfrom_common(int fd, void* buf, unsigned long len,
+		int flags, void* from, int* socklen, bool cancelable)
 {
 	int ret, linux_flags;
 	int cap = socklen ? *socklen : 0;
@@ -30,10 +39,10 @@ long sys_recvfrom_nocancel(int fd, void* buf, unsigned long len,
 	linux_flags = msgflags_bsd_to_linux(flags);
 
 #ifdef __NR_socketcall
-	ret = LINUX_SYSCALL(__NR_socketcall, LINUX_SYS_RECVFROM, ((long[6]) { fd, buf, len,
+	ret = LINUX_SYSCALL_C(cancelable, __NR_socketcall, LINUX_SYS_RECVFROM, ((long[6]) { fd, buf, len,
 			linux_flags, from, socklen }));
 #else
-	ret = LINUX_SYSCALL(__NR_recvfrom, fd, buf, len, linux_flags, from, socklen);
+	ret = LINUX_SYSCALL_C(cancelable, __NR_recvfrom, fd, buf, len, linux_flags, from, socklen);
 #endif
 
 	if (ret < 0)

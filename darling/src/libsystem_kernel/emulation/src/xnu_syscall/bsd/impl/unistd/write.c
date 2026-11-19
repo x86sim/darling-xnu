@@ -11,10 +11,12 @@
 #include <sys/uio.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/bpf/bpf_device.h>
 
+static long sys_write_common(int fd, const void* mem, int len, bool cancelable);
+
 long sys_write(int fd, const void* mem, int len)
 {
 	CANCELATION_POINT();
-	return sys_write_nocancel(fd, mem, len);
+	return sys_write_common(fd, mem, len, true);
 }
 
 __attribute__((visibility("default")))
@@ -25,6 +27,11 @@ long __write_for_xtrace(int fd, const void* mem, int len)
 
 
 long sys_write_nocancel(int fd, const void* mem, int len)
+{
+	return sys_write_common(fd, mem, len, false);
+}
+
+static long sys_write_common(int fd, const void* mem, int len, bool cancelable)
 {
 	int ret;
 	long route_ret;
@@ -44,7 +51,7 @@ long sys_write_nocancel(int fd, const void* mem, int len)
 	if (bpf_device_fd_count && bpf_device_write(fd, mem, len, &bpf_ret))
 		return bpf_ret;
 
-	ret = LINUX_SYSCALL3(__NR_write, fd, mem, len);
+	ret = LINUX_SYSCALL_C(cancelable, __NR_write, fd, mem, len);
 	if (ret < 0) {
 		// Linux raised SIGPIPE itself for its own EPIPE; a socket error made EPIPE gets XNU's (sostate.h)
 		int linux_raised = ret == -LINUX_EPIPE;

@@ -1,5 +1,6 @@
 #include <darling/emulation/xnu_syscall/bsd/impl/select/select.h>
 
+#include <stdbool.h>
 #include <stddef.h>
 
 #include <darling/emulation/common/base.h>
@@ -127,13 +128,20 @@ static int filter_never_connected(int nfds, void* rfds, void* wfds, void* in_r, 
 	return ret;
 }
 
+static long sys_select_common(int nfds, void* rfds, void* wfds, void* efds, struct bsd_timeval* timeout, bool cancelable);
+
 long sys_select(int nfds, void* rfds, void* wfds, void* efds, struct bsd_timeval* timeout)
 {
 	CANCELATION_POINT();
-	return sys_select_nocancel(nfds, rfds, wfds, efds, timeout);
+	return sys_select_common(nfds, rfds, wfds, efds, timeout, true);
 }
 
 long sys_select_nocancel(int nfds, void* rfds, void* wfds, void* efds, struct bsd_timeval* timeout)
+{
+	return sys_select_common(nfds, rfds, wfds, efds, timeout, false);
+}
+
+static long sys_select_common(int nfds, void* rfds, void* wfds, void* efds, struct bsd_timeval* timeout, bool cancelable)
 {
 	#if defined(__NR__newselect) || defined(__NR_select)
 		int ret;
@@ -162,10 +170,10 @@ long sys_select_nocancel(int nfds, void* rfds, void* wfds, void* efds, struct bs
 		for (;;)
 		{
 		#if defined(__NR__newselect)
-			ret = LINUX_SYSCALL(__NR__newselect, wait_nfds, rfds, wfds, efds,
+			ret = LINUX_SYSCALL_C(cancelable, __NR__newselect, wait_nfds, rfds, wfds, efds,
 					(timeout != NULL) ? &ltv : NULL);
 		#else
-			ret = LINUX_SYSCALL(__NR_select, wait_nfds, rfds, wfds, efds,
+			ret = LINUX_SYSCALL_C(cancelable, __NR_select, wait_nfds, rfds, wfds, efds,
 					(timeout != NULL) ? &ltv : NULL);
 		#endif
 			if (ret > 0 && watch >= 0)
@@ -244,7 +252,7 @@ long sys_select_nocancel(int nfds, void* rfds, void* wfds, void* efds, struct bs
 			ts.tv_nsec = (long)timeout->tv_usec * 1000L;
 		}
 
-		return sys_pselect_nocancel(nfds, rfds, wfds, efds,
-				(timeout != NULL) ? &ts : NULL, NULL);
+		return sys_pselect_common(nfds, rfds, wfds, efds,
+				(timeout != NULL) ? &ts : NULL, NULL, cancelable);
 	#endif
 }

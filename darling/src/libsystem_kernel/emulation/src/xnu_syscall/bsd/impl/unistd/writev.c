@@ -8,13 +8,20 @@
 #include <darling/emulation/xnu_syscall/bsd/helper/network/route.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/network/socktables.h>
 
+static long sys_writev_common(int fd, struct iovec* iovp, unsigned int len, bool cancelable);
+
 long sys_writev(int fd, struct iovec* iovp, unsigned int len)
 {
 	CANCELATION_POINT();
-	return sys_writev_nocancel(fd, iovp, len);
+	return sys_writev_common(fd, iovp, len, true);
 }
 
 long sys_writev_nocancel(int fd, struct iovec* iovp, unsigned int len)
+{
+	return sys_writev_common(fd, iovp, len, false);
+}
+
+static long sys_writev_common(int fd, struct iovec* iovp, unsigned int len, bool cancelable)
 {
 	int ret;
 	long route_ret;
@@ -29,7 +36,7 @@ long sys_writev_nocancel(int fd, struct iovec* iovp, unsigned int len)
 			return sent < 0 ? socket_send_failed(fd, sent, 0, 0) : sent;
 	}
 
-	ret = LINUX_SYSCALL3(__NR_writev, fd, iovp, len);
+	ret = LINUX_SYSCALL_C(cancelable, __NR_writev, fd, iovp, len);
 	if (ret < 0) {
 		// Linux raised SIGPIPE itself for its own EPIPE; a socket error made EPIPE gets XNU's (sostate.h)
 		int linux_raised = ret == -LINUX_EPIPE;
