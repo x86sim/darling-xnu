@@ -14,6 +14,7 @@
 #include <darling/emulation/xnu_syscall/bsd/helper/misc/dataless.h> // x86Sim
 #include <darling/emulation/xnu_syscall/bsd/helper/misc/nofile_limit.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/bpf/bpf_device.h>
+#include <darling/emulation/xnu_syscall/bsd/impl/misc/fsgetpath.h> // x86Sim: /.vol
 
 #include <darlingserver/rpc.h>
 
@@ -97,6 +98,35 @@ long sys_openat_common(int fd, const char* filename, int flags, unsigned int mod
 			ret = errno_linux_to_bsd(-err);
 		}
 		return nofile_limit_check_new(ret);
+	}
+
+	// x86Sim: volfs. XNU opens "/.vol/<fsid>/<object id>[/name...]" by id (the volume's fsid as a decimal, the
+	// object's file id); Linux has no such tree. Resolved like fsgetpath (the ids this prefix has handed out), then
+	// opened by path. FileProvider's fileproviderd opens the items it tracks that way when the sim2host host speaks
+	// protocol version 1, as Apple's Mac does (fpsim2host)
+	char volpath[1024];
+	if (filename[0] == '/' && filename[1] == '.' && filename[2] == 'v' && filename[3] == 'o' && filename[4] == 'l' && filename[5] == '/')
+	{
+		const char* p = filename + 6;
+		unsigned long long fsidv = 0, objid = 0;
+		int nd = 0;
+		while (*p >= '0' && *p <= '9') { fsidv = fsidv * 10 + (*p++ - '0'); nd++; }
+		if (!nd || *p != '/')
+			return -ENOENT;
+		p++; nd = 0;
+		while (*p >= '0' && *p <= '9') { objid = objid * 10 + (*p++ - '0'); nd++; }
+		if (!nd || (*p && *p != '/'))
+			return -ENOENT;
+		int fsid[2] = { (int) fsidv, 0 };
+		long r = sys_fsgetpath(volpath, sizeof(volpath), fsid, objid);
+		if (r < 0)
+			return r;
+		__SIZE_TYPE__ len = __simple_strlen(volpath), rest = __simple_strlen(p);
+		if (len + rest + 1 > sizeof(volpath))
+			return -ENAMETOOLONG;
+		for (__SIZE_TYPE__ i = 0; i <= rest; i++)
+			volpath[len + i] = p[i];
+		filename = volpath;
 	}
 
 	struct vchroot_expand_args vc;
