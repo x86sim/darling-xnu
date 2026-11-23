@@ -23,6 +23,7 @@
 #include <darling/emulation/xnu_syscall/bsd/helper/misc/readline.h>
 #include <darling/emulation/common/string.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/misc/host_platform.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/misc/platform_identity.h>
 #include "proc_boottime.h"
 
 #include <darling-config.h>
@@ -227,6 +228,9 @@ extern bool darling_foreign_libsystem(void);
 sysctl_handler(handle_osrelease)
 {
 	const char* s = EMULATED_RELEASE;
+	const dserver_platform_identity_t* identity = platform_identity();
+	if (identity != NULL && identity->os_release[0] != '\0')
+		s = identity->os_release;
 
 #ifndef VARIANT_DYLD
 	if (darling_foreign_libsystem())
@@ -275,9 +279,16 @@ sysctl_handler(handle_bootsessionuuid)
 
 sysctl_handler(handle_version)
 {
-	const char* s = EMULATED_VERSION;
+	const char* rel = EMULATED_RELEASE;
+	const dserver_platform_identity_t* identity = platform_identity();
+	if (identity != NULL && identity->os_release[0] != '\0')
+		rel = identity->os_release;
 
-	return copyout_string(s, (char*) old, oldlen);
+	// A 128-byte buffer is plenty for "Darwin Kernel Version " (22 bytes) plus
+	// the release string, which is capped at DSERVER_PLATFORM_IDENTITY_STRING_MAX (64 bytes).
+	char buf[128];
+	__simple_sprintf(buf, "Darwin Kernel Version %s", rel);
+	return copyout_string(buf, (char*) old, oldlen);
 }
 
 // x86Sim: kern.osversion of a simulator process is the host's build too, as kern.osproductversion below (26A428:
@@ -288,7 +299,12 @@ sysctl_handler(handle_version)
 static int x86sim_simulator_process(void);
 sysctl_handler(handle_osversion)
 {
-	const char* s = x86sim_simulator_process() ? X86SIM_SIM_HOST_OSVERSION : EMULATED_OSVERSION;
+	const char* s = EMULATED_OSVERSION;
+	const dserver_platform_identity_t* identity = platform_identity();
+	if (identity != NULL && identity->os_version[0] != '\0')
+		s = identity->os_version;
+	if (x86sim_simulator_process())
+		s = X86SIM_SIM_HOST_OSVERSION;
 
 	return copyout_string(s, (char*) old, oldlen);
 }
@@ -471,7 +487,14 @@ static int x86sim_simulator_process(void) {
 	return simulator;
 }
 static sysctl_handler(handle_osproductversion) {
-	copyout_string(x86sim_simulator_process() ? X86SIM_SIM_HOST_OSPRODUCTVERSION : EMULATED_OSPRODUCTVERSION, (char*)old, oldlen);
+	const char* s = EMULATED_OSPRODUCTVERSION;
+	const dserver_platform_identity_t* identity = platform_identity();
+	if (identity != NULL && identity->os_product_version[0] != '\0')
+		s = identity->os_product_version;
+	if (x86sim_simulator_process())
+		s = X86SIM_SIM_HOST_OSPRODUCTVERSION;
+
+	copyout_string(s, (char*)old, oldlen);
 	return 0;
 };
 

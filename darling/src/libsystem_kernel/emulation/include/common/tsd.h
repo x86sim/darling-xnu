@@ -12,6 +12,7 @@
 #define __PTK_DARLING_WQ_ENTRY_SP         __PTK_DARLING_KEY6 // x86Sim: rsp at a workqueue thread's first entry
 #define __PTK_DARLING_SIGNAL_HANDLERS_RUN __PTK_DARLING_KEY7 // how many guest signal handlers this thread has run
 #define __PTK_DARLING_IOPOL               __PTK_DARLING_KEY8 // x86Sim: the thread's iopolicysys policies (4 bits per type)
+#define __PTK_DARLING_PSYNCH              __PTK_DARLING_KEY9 // this thread's in-process psynch state (psynch/ksyn)
 // other __PTK_DARLING_KEYs are currently unused
 
 #endif // _DARLING_EMULATION_TSD_H_

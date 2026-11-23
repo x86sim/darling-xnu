@@ -85,10 +85,9 @@ static long int dserver_rpc_hooks_send_message(int socket, const dserver_rpc_hoo
 
 static long int dserver_rpc_hooks_receive_message(int socket, dserver_rpc_hooks_msghdr_t* out_message) {
 	long int ret = 0;
-	// x86Sim: recvmsg overwrites msg_controllen with what it received. After an S2C call without an FD (munmap,
-	// msync, ...) it was 0, so the FD of a following S2C mmap in the same RPC was truncated away (MSG_CTRUNC) and
-	// "Bad S2C call: no FD, but expected one" aborted the process. Restore it before every receive.
-	const size_t controllen = out_message->msg_controllen;
+	// recvmsg() shrinks msg_controllen to the size of the control data it received. after an S2C call, restore it
+	// for the next message, or a descriptor that comes with it (an S2C mmap after an S2C munmap) would be dropped.
+	__typeof__(out_message->msg_controllen) controllen = out_message->msg_controllen;
 
 retry:
 	out_message->msg_controllen = controllen;

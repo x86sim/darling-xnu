@@ -22,6 +22,7 @@
 #include <darling/emulation/common/tsd.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/bsdthread/bsdthread_register.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/bsdthread/workq_kernreturn.h>
+#include <darling/emulation/xnu_syscall/bsd/impl/psynch/psynch_inproc.h>
 
 #include <darlingserver/rpc.h>
 
@@ -68,6 +69,9 @@ long sys_fork(void)
 	int ret;
 	int wdfd = get_perthread_wd();
 	kqueue_child_reset_resolve();
+	unsigned long long psynch_sigmask;
+
+	psynch_inproc_prefork(&psynch_sigmask);
 
 	// x86Sim: the raw syscall, not upstream's native_fork() (the host libc's fork()): glibc's fork() needs glibc's
 	// thread pointer, which Darling threads do not keep (Darling hung at boot with it). mldr's own locks are reset in
@@ -77,11 +81,15 @@ long sys_fork(void)
 #else
 	ret = LINUX_SYSCALL(__NR_clone, LINUX_SIGCHLD, 0);
 #endif
+	if (ret != 0)
+		psynch_inproc_postfork_parent(&psynch_sigmask);
+
 	if (ret < 0)
 		ret = errno_linux_to_bsd(ret);
 	else if (ret == 0)
 	{
 		// in the child
+		psynch_inproc_postfork_child(&psynch_sigmask);
 
 		// x86Sim (2026-11-13): mldr's locks first (elfcalls.h postfork_child): the guard table below closes the
 		// parent's descriptors through mldr's socket bitmap, whose lock another thread may have held at the fork

@@ -77,6 +77,7 @@ set(linux_premigration_sources
 	src/linux_premigration/ext/eventfd_write.c
 	src/linux_premigration/ext/fanotify.c
 	src/linux_premigration/ext/file_handle.c
+	src/linux_premigration/ext/for-iosurface.c
 	src/linux_premigration/ext/for-libelfloader.c
 	src/linux_premigration/ext/for-libkqueue.c
 	src/linux_premigration/ext/for-platform-identity.c
@@ -247,6 +248,10 @@ set(xnu_syscall_bsd_sources
 	src/xnu_syscall/bsd/impl/psynch/psynch_cvclrprepost.c
 	src/xnu_syscall/bsd/impl/psynch/psynch_cvsignal.c
 	src/xnu_syscall/bsd/impl/psynch/psynch_cvwait.c
+	src/xnu_syscall/bsd/impl/psynch/psynch_inproc.c
+	src/xnu_syscall/bsd/impl/psynch/ksyn/kern_synch.c
+	src/xnu_syscall/bsd/impl/psynch/ksyn/ksyn_kern.c
+	src/xnu_syscall/bsd/impl/psynch/ksyn/ksyn_jmp.S
 	src/xnu_syscall/bsd/impl/psynch/psynch_mutexdrop.c
 	src/xnu_syscall/bsd/impl/psynch/psynch_mutexwait.c
 	src/xnu_syscall/bsd/impl/psynch/psynch_rw_rdlock.c
