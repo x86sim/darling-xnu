@@ -40,6 +40,8 @@
 
 #include <darlingserver/rpc.h>
 // upstream's descriptor info (PROC_PIDLISTFDS, proc_pidfdinfo)
+extern void* malloc(__SIZE_TYPE__ size);
+extern void free(void* ptr);
 #include <darling/emulation/common/string.h>
 #include <sys/resource.h>
 #include <sys/sysctl.h>
