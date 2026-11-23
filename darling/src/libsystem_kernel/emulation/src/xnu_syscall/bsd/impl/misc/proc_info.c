@@ -39,6 +39,14 @@
 #include <darling/emulation/xnu_syscall/bsd/helper/misc/readline.h>
 
 #include <darlingserver/rpc.h>
+// upstream's descriptor info (PROC_PIDLISTFDS, proc_pidfdinfo)
+#include <darling/emulation/common/string.h>
+#include <sys/resource.h>
+#include <sys/sysctl.h>
+#include <darling/emulation/xnu_syscall/bsd/impl/stat/stat.h>
+#include <darling/emulation/conversion/common_at.h>
+#include <darling/emulation/conversion/stat/common.h>
+#include <darling/emulation/conversion/duct_errno.h>
 
 #define LINUX_PR_SET_NAME 15
 
