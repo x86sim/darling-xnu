@@ -11,6 +11,7 @@
 #include <darling/emulation/xnu_syscall/bsd/helper/network/socktables.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/misc/nofile_limit.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/bpf/bpf_device.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/network/nosigpipe.h>
 
 extern void kqueue_dup(int oldfd, int newfd);
 

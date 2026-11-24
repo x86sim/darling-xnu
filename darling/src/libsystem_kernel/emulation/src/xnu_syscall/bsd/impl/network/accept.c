@@ -15,6 +15,7 @@
 #include <darling/emulation/xnu_syscall/bsd/impl/fcntl/open.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/unistd/close.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/misc/nofile_limit.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/network/nosigpipe.h>
 
 static long sys_accept_common(int fd, void* from, int* socklen, bool cancelable);
 
@@ -58,6 +59,15 @@ static long sys_accept_common(int fd, void* from, int* socklen, bool cancelable)
 				return conv;
 			}
 			*socklen = conv;
+		}
+
+		// ... and SO_NOSIGPIPE, which also drops a stale option of the number
+		// (XNU's sonewconn() copies the listener's so_flags, SOF_NOSIGPIPE among them)
+		socket_nosigpipe_close(accepted_fd);
+		if (NOSIGPIPE_ACTIVE()) {
+			int on = 0;
+			if (socket_nosigpipe_get(fd, &on) == 0 && on)
+				socket_nosigpipe_set(accepted_fd, 1);
 		}
 
 		// on macOS (and BSD), accept-ed sockets inherit O_NONBLOCK

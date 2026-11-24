@@ -1,5 +1,8 @@
 #include <darling/emulation/xnu_syscall/bsd/impl/unistd/write.h>
 
+#include <stddef.h>
+#include <sys/errno.h>
+
 #include <darling/emulation/common/base.h>
 #include <darling/emulation/conversion/errno.h>
 #include <darling/emulation/conversion/duct_errno.h>
@@ -10,6 +13,8 @@
 
 #include <sys/uio.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/bpf/bpf_device.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/network/nosigpipe.h>
+#include <darling/emulation/xnu_syscall/bsd/impl/network/sendto.h>
 
 static long sys_write_common(int fd, const void* mem, int len, bool cancelable);
 
@@ -50,6 +55,7 @@ static long sys_write_common(int fd, const void* mem, int len, bool cancelable)
 
 	if (bpf_device_fd_count && bpf_device_write(fd, mem, len, &bpf_ret))
 		return bpf_ret;
+
 
 	ret = LINUX_SYSCALL_C(cancelable, __NR_write, fd, mem, len);
 	if (ret < 0) {

@@ -12,6 +12,7 @@
 #include <darling/emulation/xnu_syscall/bsd/helper/network/duct.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/network/route.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/misc/nofile_limit.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/network/nosigpipe.h>
 
 long sys_socket(int domain, int type, int protocol)
 {
@@ -68,7 +69,10 @@ long sys_socket(int domain, int type, int protocol)
 	if (ret < 0)
 		ret = errno_linux_to_bsd(ret);
 
-	return nofile_limit_check_new(ret);
+	ret = nofile_limit_check_new(ret);
+	if (ret >= 0)
+		socket_nosigpipe_close(ret); // a number closed behind our back (fork guard table) keeps no stale flag
+	return ret;
 }
 
 // x86Sim: socket_delegate (BSD 450): a socket whose traffic is attributed to another process (epid). iOS 27's

@@ -16,6 +16,15 @@
 
 #define LINGER_TICKS_PER_SEC	100 // Is this the right number of ticks per sec?
 
+// Fails like any option on a descriptor that is not a socket.
+static long check_socket(int fd)
+{
+	int type;
+	int len = sizeof(type);
+
+	return sys_getsockopt(fd, BSD_SOL_SOCKET, BSD_SO_TYPE, &type, &len);
+}
+
 long sys_setsockopt(int fd, int level, int optname, const void* optval, int optlen)
 {
 	int ret, linux_level, linux_optname;

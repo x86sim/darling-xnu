@@ -8,6 +8,7 @@
 #include <darling/emulation/conversion/network/getsockopt.h>
 #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/network/duct.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/network/nosigpipe.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/time/gettimeofday.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/network/route.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/network/sostate.h>
@@ -66,6 +67,8 @@ static long so_nread(int fd, void* optval, int* optlen)
 		return errno_linux_to_bsd(ret);
 	return int_option(n, optval, optlen);
 }
+
+extern void* memcpy(void*, const void*, __SIZE_TYPE__);
 
 long sys_getsockopt(int fd, int level, int optname, void* optval, int* optlen)
 {

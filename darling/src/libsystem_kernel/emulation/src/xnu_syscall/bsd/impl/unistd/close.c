@@ -13,6 +13,7 @@
 #include <darling/emulation/xnu_syscall/bsd/helper/network/sockextra.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/select/select.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/bpf/bpf_device.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/network/nosigpipe.h>
 #include <_libkernel_init.h>
 
 __attribute__((weak))
@@ -76,6 +77,8 @@ long sys_close_nocancel(int fd)
 long close_internal(int fd)
 {
 	int ret;
+
+	socket_nosigpipe_close(fd);
 
 	ret = LINUX_SYSCALL1(__NR_close, fd);
 	if (ret < 0)
