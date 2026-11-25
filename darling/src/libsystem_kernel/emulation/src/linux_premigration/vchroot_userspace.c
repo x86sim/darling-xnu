@@ -292,6 +292,21 @@ static bool vch_proc_file(const char* path)
 	return false;
 }
 
+// x86Sim: whether the prefix's /proc is the host's, linked as /Volumes/SystemRoot/proc (Darling's nonroot mode, no
+// PID namespace and no procfs of its own) rather than a procfs mounted on it. The link means nothing to Linux, so
+// <prefix>/proc/<pid>/stat fails there with ENOENT: the host's /proc/<pid>/stat is the file. Looked at once.
+static bool vch_proc_is_host(void)
+{
+	static int known = -1;
+	if (known < 0)
+	{
+		char path[4096 + 8], link[64];
+		__simple_sprintf(path, "%s/proc", prefix_path);
+		known = LINUX_SYSCALL(__NR_readlinkat, LINUX_AT_FDCWD, path, link, sizeof(link)) > 0;
+	}
+	return known;
+}
+
 // true if it produced the result (ctxt->current_path, *out_rv); false: run the walk as before
 static bool vchroot_fast(struct context* ctxt, const char* input_path, int* out_rv)
 {
@@ -326,9 +341,10 @@ static bool vchroot_fast(struct context* ctxt, const char* input_path, int* out_
 			memcpy(path, input_path, n + 1);
 			if (vch_proc_file(path) && prefix_path_len + n + 1 <= (int)sizeof(ctxt->current_path))
 			{
-				memcpy(ctxt->current_path, prefix_path, prefix_path_len);
-				memcpy(ctxt->current_path + prefix_path_len, path, n + 1);
-				ctxt->current_path_len = prefix_path_len + n;
+				int at = vch_proc_is_host() ? 0 : prefix_path_len;
+				memcpy(ctxt->current_path, prefix_path, at);
+				memcpy(ctxt->current_path + at, path, n + 1);
+				ctxt->current_path_len = at + n;
 				*out_rv = 0;
 				return true;
 			}
