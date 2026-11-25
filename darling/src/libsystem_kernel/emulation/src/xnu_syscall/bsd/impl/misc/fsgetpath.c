@@ -525,6 +525,24 @@ static long fsgetpath_volume_root(const char* buf, unsigned long size, unsigned 
 	return len + 1;
 }
 
+#ifndef FSOPT_NOFIRMLINKPATH
+#define FSOPT_NOFIRMLINKPATH 0x00000080U
+#endif
+#ifndef FSOPT_ISREALFSID
+#define FSOPT_ISREALFSID 0x00000200U
+#endif
+
+// x86Sim: fsgetpath_ext (BSD 217, iOS 13.0+ / macOS 10.15+) was left mapped to sys_statv (-ENOTSUP).
+// FileProviderResolver / fpfs_fsgetpath calls it with FSOPT_NOFIRMLINKPATH / FSOPT_ISREALFSID. Darling
+// has no firmlinks and fsid already holds real st_dev, so validate XNU's option mask and delegate to
+// sys_fsgetpath.
+long sys_fsgetpath_ext(const char* buf, unsigned long size, void* fsid, unsigned long long objid, unsigned int options)
+{
+	if (options & ~(FSOPT_NOFIRMLINKPATH | FSOPT_ISREALFSID))
+		return -EINVAL;
+	return sys_fsgetpath(buf, size, fsid, objid);
+}
+
 // x86Sim: openbyid_np (BSD 479) was missing (ENOSYS). APFS opens a file by its object id or by its document id;
 // GenerationalStorage resolves a document id that way (GSLibraryResolveDocumentId2: openbyid_np, then checks the
 // document id of what it opened), and FileProviderResolver with it every "did=" item identifier: Preview could
