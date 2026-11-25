@@ -3,6 +3,7 @@
 
 #define PRIVATE 1
 #include <sys/event.h>
+#include <stdbool.h>
 
 // Darling specific
 #define WQOPS_QUEUE_REQTHREAD_FOR_KEVENT  0x100020
@@ -27,5 +28,10 @@ long sys_workq_kernreturn(int options, void* item, int affinity, int prio);
 
 int sem_down(int* sem, int timeout);
 void sem_up(int* sem);
+
+// x86Sim: around a workloop sync wait (kevent_qos.c): a workqueue thread's slots are free while it is blocked.
+// begin returns whether the caller is a workqueue thread (then call end once woken).
+bool wq_sync_wait_begin(void);
+void wq_sync_wait_end(void);
 
 #endif // WORKQ_KERNRETURN_H

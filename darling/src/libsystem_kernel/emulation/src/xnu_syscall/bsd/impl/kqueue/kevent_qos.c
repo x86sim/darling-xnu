@@ -998,8 +998,12 @@ static int wl_change(uint64_t id, struct kevent_qos_s* ch)
 	if (waiter != NULL)
 	{
 		WLTRACE("  sync wait 0x%llx\n", (unsigned long long) ch->ident);
+		// x86Sim: blocked, a workqueue thread doesn't hold a workqueue slot (workq_kernreturn.c)
+		const bool wq_thread = wq_sync_wait_begin();
 		while (!__atomic_load_n(&waiter->woken, __ATOMIC_ACQUIRE))
 			sem_down(&waiter->sem, -1);
+		if (wq_thread)
+			wq_sync_wait_end();
 		libsimple_lock_lock(&wl_lock);
 		waiter->blocked = false;
 		if (waiter->deleted)

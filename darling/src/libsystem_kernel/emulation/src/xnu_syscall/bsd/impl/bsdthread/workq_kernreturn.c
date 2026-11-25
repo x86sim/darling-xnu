@@ -220,6 +220,36 @@ static int sem_trydown(int* sem)
 }
 
 static void wq_start_one(int flags, struct wq_kevent_data* wq_event);
+static void wq_cpend_drain(void);
+
+// x86Sim: a workqueue thread blocking in a workloop sync wait (dispatch_sync on a queue another thread owns) stops
+// counting against the limits until it is woken, as XNU counts only threads that run. Each such waiter held a slot:
+// in a no-cache boot (everything translated on first use) BulletinBoard's dataProviderForSectionID: dispatch_sync'd
+// from 50 workers at once, the 64 were gone, and the queue's owner, ending its ownership, needed a thread that
+// could never start (wq_start_one's sem_down): SpringBoard stalled on the Apple logo for good. The waiters are
+// bounded by kevent_qos.c's WL_WAITERS. Woken, the thread takes its slots back without waiting (the count may go
+// below 0 for a while: no new thread starts until enough runs end).
+bool wq_sync_wait_begin(void)
+{
+	if (_pthread_getspecific_direct(__PTK_DARLING_WQ_ENTRY_SP) == 0)
+		return false; // not a workqueue thread: it holds no slot
+	const uintptr_t run_flags = (uintptr_t) _pthread_getspecific_direct(__PTK_DARLING_WQ_FLAGS);
+	sem_up(&workq_sem);
+	if (wq_flags_constrained(run_flags))
+	{
+		sem_up(&workq_constrained_sem);
+		wq_cpend_drain(); // constrained requests queued while the pool was full start now
+	}
+	return true;
+}
+
+void wq_sync_wait_end(void)
+{
+	const uintptr_t run_flags = (uintptr_t) _pthread_getspecific_direct(__PTK_DARLING_WQ_FLAGS);
+	__atomic_sub_fetch(&workq_sem, 1, __ATOMIC_ACQ_REL);
+	if (wq_flags_constrained(run_flags))
+		__atomic_sub_fetch(&workq_constrained_sem, 1, __ATOMIC_ACQ_REL);
+}
 
 // x86Sim (Speed 17): on arm64 a constrained request made while the capped constrained pool is full is queued here,
 // as XNU queues it, instead of blocking the requester in sem_down. A requester blocked there could be a worker the
