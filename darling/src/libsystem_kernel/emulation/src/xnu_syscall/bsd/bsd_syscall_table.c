@@ -1,5 +1,6 @@
 #include <darling/emulation/xnu_syscall/bsd/bsd_syscall_table.h>
 
+#include <darling/emulation/xnu_syscall/bsd/impl/aio/aio.h> // x86Sim
 #include <darling/emulation/xnu_syscall/bsd/impl/audit/audit_addr.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/audit/auditon.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/audit/audit.h>
@@ -429,6 +430,14 @@ void* __bsd_syscall_table[BSD_SYSCALL_TABLE_SIZE] = {
 	[308] = sys_psynch_rw_unlock,
 	[310] = sys_getsid,
 	[312] = sys_psynch_cvclrprepost,
+	[313] = sys_aio_fsync, // x86Sim
+	[314] = sys_aio_return, // x86Sim
+	[315] = sys_aio_suspend, // x86Sim
+	[316] = sys_aio_cancel, // x86Sim
+	[317] = sys_aio_error, // x86Sim
+	[318] = sys_aio_read, // x86Sim
+	[319] = sys_aio_write, // x86Sim
+	[320] = sys_lio_listio, // x86Sim
 	[322] = sys_iopolicysys,
 	[323] = sys_x86sim_process_policy, // x86Sim
 	[327] = sys_issetugid,
@@ -504,6 +513,7 @@ void* __bsd_syscall_table[BSD_SYSCALL_TABLE_SIZE] = {
 	[416] = sys_waitid_nocancel,
 	[417] = sys_poll_nocancel,
 	[420] = sys_sem_wait_nocancel,
+	[421] = sys_aio_suspend_nocancel, // x86Sim
 	[422] = sys_sigwait_nocancel,
 	[423] = sys_semwait_signal_nocancel,
 	[427] = sys_fsgetpath,
