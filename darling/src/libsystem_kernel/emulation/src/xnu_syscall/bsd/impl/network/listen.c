@@ -4,6 +4,8 @@
 #include <darling/emulation/common/base.h>
 #include <darling/emulation/conversion/errno.h>
 #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
+#include <darling/emulation/linux_premigration/ext/for-libkqueue.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/network/sostate.h>
 
 void __attribute__((weak)) __attribute__((visibility("default"))) __darling_kqueue_register_listen(int fd)
 {
@@ -25,8 +27,11 @@ long sys_listen(int fd, int backlog)
 
 	if (ret < 0)
 		ret = errno_linux_to_bsd(ret);
-	else
+	else {
 		__darling_kqueue_register_listen(fd);
+		// x86Sim: a listening socket no longer hangs up (libkqueue parks knotes on a never-connected one)
+		SOCKET_UNPARK(fd);
+	}
 
 	return ret;
 }

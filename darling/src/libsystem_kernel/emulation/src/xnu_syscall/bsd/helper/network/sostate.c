@@ -74,6 +74,7 @@ volatile int socket_errors_held;
 volatile int socket_errors_taking;
 volatile int socket_entries_used;
 volatile int socket_watchers;
+volatile int socket_parked;
 
 static struct socket_entry* find_locked(unsigned long long cookie)
 {
@@ -173,6 +174,7 @@ void socket_errors_atfork_child(void)
 	libsimple_lock_init(&entries_lock);
 	socket_errors_taking = 0;
 	socket_watchers = 0;
+	socket_parked = 0;
 	for (int i = 0; i < SOCKET_ENTRIES_MAX; i++) {
 		if (entries[i].cookie != 0) {
 			entries[i].watchers = 0;

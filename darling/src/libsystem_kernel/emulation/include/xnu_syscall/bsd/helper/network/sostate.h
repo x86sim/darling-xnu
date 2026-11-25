@@ -72,6 +72,7 @@ extern volatile int socket_errors_held;    // sockets holding an error
 extern volatile int socket_errors_taking;  // threads between taking an error from Linux and holding it
 extern volatile int socket_entries_used;   // sockets remembered (a held error, or watched)
 extern volatile int socket_watchers;       // EVFILT_SOCK knotes
+extern volatile int socket_parked;         // EVFILT_READ/WRITE knotes parked on a never-connected socket (for-libkqueue.h)
 
 // taking first: a reader that finds no error in Linux and none taking finds the one taken held
 #define SOCKET_ERRORS_HELD() (__atomic_load_n(&socket_errors_taking, __ATOMIC_SEQ_CST) != 0 || \
@@ -107,6 +108,10 @@ void socket_shutdown(int fd, int how);
 
 // connect() or shutdown() on fd: tells its EVFILT_SOCK knotes (for-libkqueue.h's kqueue_socket_changed)
 #define SOCKET_CHANGED(fd) do { if (socket_watchers != 0) kqueue_socket_changed(fd); } while (0)
+
+// connect() (whatever its result: a connect in progress ends the hang-up too) or listen() on fd: re-arms the
+// EVFILT_READ/WRITE knotes parked on it (for-libkqueue.h's kqueue_socket_unpark)
+#define SOCKET_UNPARK(fd) do { if (__atomic_load_n(&socket_parked, __ATOMIC_SEQ_CST) != 0) kqueue_socket_unpark(fd); } while (0)
 
 // In the child of a fork, before it runs anything else.
 void socket_errors_atfork_child(void);

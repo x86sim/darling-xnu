@@ -27,6 +27,16 @@ void kqueue_socket_changed(int fd)
 		foreign(fd);
 }
 
+// x86Sim: libkqueue's, when it's there (for-libkqueue.h)
+__attribute__((weak))
+__attribute__((visibility("default")))
+void kqueue_socket_unpark(int fd)
+{
+	FOREIGN_HOOK(void (*)(int), foreign, "__darling_sim_kqueue_socket_unpark");
+	if (foreign)
+		foreign(fd);
+}
+
 // Must be included after strncpy
 #include <darling/emulation/linux_premigration/vchroot_expand.h>
 #include <darling/emulation/common/bsdthread/per_thread_wd.h>
@@ -97,6 +107,8 @@ static long sys_connect_common(int fd, const void* name, int socklen, bool cance
 	// connected, or failed; a connect still in progress changes nothing yet
 	if (ret != -EINPROGRESS && ret != -EALREADY)
 		SOCKET_CHANGED(fd);
+	// x86Sim: but it ends the hang-up of a socket that was never connected (libkqueue parks knotes on that)
+	SOCKET_UNPARK(fd);
 
 	return ret;
 }

@@ -49,6 +49,12 @@ int _socket_error_4libkqueue(int fd, int linux_error);
 VISIBLE
 void _socket_watch_4libkqueue(int fd, int delta);
 
+// x86Sim: an EVFILT_READ/WRITE knote was parked (delta 1) or unparked (-1): Linux reports a stream socket that was
+// never connected as hung up, whatever events are asked for, so its epoll entry is left disarmed (libkqueue's
+// linux/socket.c) until connect() or listen() calls kqueue_socket_unpark() for it. While any knote is parked.
+VISIBLE
+void _socket_park_4libkqueue(int delta);
+
 // Defined by libkqueue, called by libsystem_kernel, which has weak no-op definitions for a process without libkqueue
 // (close.c, dup.c, connect.c).
 
@@ -62,6 +68,9 @@ void kqueue_dup(int oldfd, int newfd);
 // shutdown): its EVFILT_SOCK knotes look again, as XNU's soevent() would have them do. Called only while EVFILT_SOCK
 // knotes exist (sostate.h's socket_watchers).
 void kqueue_socket_changed(int fd);
+// x86Sim: connect() or listen() on socket fd: its parked EVFILT_READ/WRITE knotes are armed again. Called only while
+// knotes are parked (sostate.h's socket_parked).
+void kqueue_socket_unpark(int fd);
 
 
 // Counts each delivery of the BSD signal on the eventfd, whichever thread

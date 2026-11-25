@@ -44,6 +44,10 @@ void _socket_watch_4libkqueue(int fd, int delta) {
 	socket_watch(fd, delta);
 };
 
+void _socket_park_4libkqueue(int delta) {
+	__atomic_add_fetch(&socket_parked, delta, __ATOMIC_SEQ_CST);
+};
+
 int _signal_watch_4libkqueue(int signum, int eventfd) {
 	int linux_signum = signum_bsd_to_linux(signum);
 	if (linux_signum <= 0)
