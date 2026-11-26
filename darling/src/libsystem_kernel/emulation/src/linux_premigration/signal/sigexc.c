@@ -20,6 +20,7 @@
 #include <darling/emulation/common/simple.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/bsdthread/pthread_canceled.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/psynch/psynch_inproc.h>
+#include <darling/emulation/xnu_syscall/mach/impl/mach_sq.h>
 #include <darling/emulation/common/tsd.h>
 #include <darling/emulation/xnu_syscall/machdep/impl/tls.h>
 #include <darling/emulation/linux_premigration/signal/tsd_trap.h>
@@ -142,6 +143,21 @@ void sigexc_altstack_will_change(void)
 		state->parked.ss_flags = LINUX_SS_DISABLE;
 }
 
+void sigexc_altstack_app_view(struct linux_stack* stack)
+{
+	struct sigexc_thread_state* state = thread_state();
+	if (state == NULL)
+		return;
+	if ((stack->ss_flags & LINUX_SS_DISABLE) && !(state->parked.ss_flags & LINUX_SS_DISABLE))
+		*stack = state->parked;
+	if (!(stack->ss_flags & LINUX_SS_DISABLE) && stack->ss_sp == state->darling.ss_sp)
+	{
+		stack->ss_sp = NULL;
+		stack->ss_flags = LINUX_SS_DISABLE;
+		stack->ss_size = 0;
+	}
+}
+
 // void sigexc_call_on_stack(uintptr_t sp, void (*fn)(void*), void* arg): calls fn(arg) with the stack
 // pointer set to sp (16-byte aligned) and returns on the caller's stack. The frame pointer links fn's
 // frames to the caller's, so backtraces go through.
@@ -234,7 +250,7 @@ static uintptr_t app_handler_stack(int linux_signum, const struct linux_ucontext
 // back, if nothing installed another since, and makes sure this signal's return keeps it.
 // Known limit: the test compares addresses, so a handler that switches to a stack at higher addresses
 // (swapcontext() to a fiber) and is interrupted there gets the stack back while its frames are live.
-static void unpark_abandoned_altstack(struct linux_ucontext* ctxt)
+void sigexc_unpark_abandoned_altstack(struct linux_ucontext* ctxt)
 {
 	struct sigexc_thread_state* state = recorded_state();
 	if (state == NULL || state == &sigexc_no_altstack || (state->parked.ss_flags & LINUX_SS_DISABLE)
@@ -298,6 +314,33 @@ static void run_app_handler_off_altstack(void* arg)
 	}
 }
 
+void sigexc_run_app_handler(int linux_signum, struct linux_siginfo* info, struct linux_ucontext* ctxt,
+		const linux_sigset_t* mask)
+{
+	// On another stack, the mask is applied there (run_app_handler_off_altstack()); until then every
+	// signal stays blocked, and so it stays after that handler (the rest of the caller,
+	// dserver_rpc_interrupt_exit() included, runs with it until sigreturn restores the interrupted
+	// mask; faults then cannot be caught there).
+	_pthread_setspecific_direct(__PTK_DARLING_SIGNAL_HANDLERS_RUN,
+			(void*)((uintptr_t)_pthread_getspecific_direct(__PTK_DARLING_SIGNAL_HANDLERS_RUN) + 1));
+
+	uintptr_t stack = ctxt ? app_handler_stack(linux_signum, ctxt) : 0;
+	const linux_sigset_t all = ~0ull;
+	LINUX_SYSCALL(__NR_rt_sigprocmask, 2 /* LINUX_SIG_SETMASK */,
+		stack != 0 ? &all : mask, NULL, sizeof(linux_sigset_t));
+
+	if (stack != 0)
+	{
+		struct app_handler_call call = { linux_signum, info, ctxt, *mask, stack };
+		sigexc_call_on_stack(stack, run_app_handler_off_altstack, &call);
+	}
+	else
+		handler_linux_to_bsd(linux_signum, info, ctxt);
+
+	if (ctxt != NULL)
+		keep_current_altstack(ctxt);
+}
+
 #if defined(__x86_64__)
 static void mcontext_to_thread_state(const struct linux_gregset* regs, x86_thread_state64_t* s);
 static void mcontext_to_float_state(const linux_fpregset_t fx, x86_float_state64_t* s);
@@ -345,7 +388,7 @@ void sigexc_setup2(void)
 		&set, NULL, sizeof(linux_sigset_t));
 }
 
-int sigexc_interrupt_enter(void)
+int sigexc_interrupt_enter(bool transparent)
 {
 	// a handler that ran while we wait for this reply would call interrupt_enter as well and take our reply for
 	// its own (they're indistinguishable); from then on, every call of both handlers would receive the reply meant
@@ -363,7 +406,7 @@ int sigexc_interrupt_enter(void)
 	LINUX_SYSCALL(__NR_rt_sigprocmask, 0 /* LINUX_SIG_BLOCK */,
 		&block, &previous, sizeof(linux_sigset_t));
 
-	int status = dserver_rpc_interrupt_enter();
+	int status = dserver_rpc_interrupt_enter(transparent);
 
 	LINUX_SYSCALL(__NR_rt_sigprocmask, 2 /* LINUX_SIG_SETMASK */,
 		&previous, NULL, sizeof(linux_sigset_t));
@@ -414,8 +457,17 @@ void sigexc_setup(void)
 	}
 	if (started_suspended) {
 		kern_printf("sigexc: start_suspended -> suspending (ret to %p)\n", __builtin_return_address(0));
-		task_suspend(mach_task_self());
+		// Stop the process, as POSIX_SPAWN_START_SUSPENDED documents: its parent sees it with waitpid(WUNTRACED) and
+		// resumes it with SIGCONT. This takes a Linux SIGSTOP directly: a SIGSTOP sent with kill() is turned into
+		// SIGSTKFLT so that sigexc can report it to a debugger, which is not wanted for a process that is not traced yet.
+		LINUX_SYSCALL(__NR_kill, LINUX_SYSCALL0(__NR_getpid), LINUX_SIGSTOP);
 		kern_printf("sigexc: start_suspended -> wokenup (ret to %p)\n", __builtin_return_address(0));
+		// resumed: darlingserver stops reporting this process as stopped at start-up (see wait4)
+		code = dserver_rpc_started_suspended(&started_suspended);
+		if (code < 0) {
+			__simple_printf("Failed to clear started_suspended status: %d\n", code);
+			__simple_abort();
+		}
 	} else {
 		int32_t tracer;
 		code = dserver_rpc_get_tracer(&tracer);
@@ -446,8 +498,11 @@ static void cancel_interrupted_syscall(struct linux_ucontext* ctxt)
 
 void sigrt_handler(int signum, struct linux_siginfo* info, struct linux_ucontext* ctxt)
 {
+	// a suspension must wait until this thread has woken the waiter of a message it just queued
+	if (signum == SIGNAL_SIGEXC_SUSPEND && mach_sq_defer_signal(signum, info))
+		return;
 
-	int status = sigexc_interrupt_enter();
+	int status = sigexc_interrupt_enter(true);
 
 	if (status != 0) {
 		__simple_printf("*** dserver_rpc_interrupt_enter failed with code %d ***\n", status);
@@ -816,6 +871,24 @@ int __darling_sigexc_add_tap(void (*tap)(int bsd_signum))
 	return -1;
 }
 
+// Darwin signals whose default action is to ignore them (SIGCONT also continues the process); on Linux
+// SIGIO and SIGPWR, which SIGINFO maps to, end it.
+static bool default_action_ignores(int bsd_signum)
+{
+	switch (bsd_signum)
+	{
+		case SIGURG:
+		case SIGCONT:
+		case SIGCHLD:
+		case SIGIO:
+		case SIGWINCH:
+		case SIGINFO:
+			return true;
+		default:
+			return false;
+	}
+}
+
 void sigexc_handler(int linux_signum, struct linux_siginfo* info, struct linux_ucontext* ctxt)
 {
 #if defined(__aarch64__) || defined(__arm64__)
@@ -823,6 +896,9 @@ void sigexc_handler(int linux_signum, struct linux_siginfo* info, struct linux_u
 	if (linux_signum == LINUX_SIGILL && info && emulate_darling_tsd_read(info, ctxt))
 		return;
 #endif
+	// the same for a signal delivered as a Mach exception, which can stop the thread for long
+	if (!is_thread_fault(linux_signum, info) && mach_sq_defer_signal(linux_signum, info))
+		return;
 	// Re-entrancy guard. The first thing this handler does is enter a server RPC,
 	// which takes duct-tape mutexes. A thread running inside a signal handler has
 	// no registered dtape thread, so dtape_mutex_lock takes its fallback path
@@ -888,9 +964,9 @@ void sigexc_handler(int linux_signum, struct linux_siginfo* info, struct linux_u
 	}
 
 	if (ctxt != NULL)
-		unpark_abandoned_altstack(ctxt);
+		sigexc_unpark_abandoned_altstack(ctxt);
 
-	int status = sigexc_interrupt_enter();
+	int status = sigexc_interrupt_enter(false);
 
 	if (status != 0) {
 		handle_signal_without_server(linux_signum, info, ctxt);
@@ -946,7 +1022,22 @@ void sigexc_handler(int linux_signum, struct linux_siginfo* info, struct linux_u
 	int sig_code = info ? info->si_code : 0;
 	unsigned long long sig_addr = info ? (unsigned long long) info->si_addr : 0;
 
-	int ret = dserver_rpc_sigprocess(bsd_signum, linux_signum, sig_pid, sig_code, (void *) sig_addr, &tstate, &fstate, &bsd_signum);
+	// the exception state that thread_get_state() reports for a fault, as the kernel recorded it in the frame
+	bool has_exception_state = false;
+	uint64_t exception_fault_address = 0;
+	uint32_t exception_trapno = 0, exception_err = 0;
+#if defined(__x86_64__)
+	if (is_thread_fault(linux_signum, info))
+	{
+		has_exception_state = true;
+		exception_fault_address = ctxt->uc_mcontext.gregs.cr2;
+		exception_trapno = ctxt->uc_mcontext.gregs.trapno;
+		exception_err = ctxt->uc_mcontext.gregs.err;
+	}
+#endif
+
+	int ret = dserver_rpc_sigprocess(bsd_signum, linux_signum, sig_pid, sig_code, (void *) sig_addr, &tstate, &fstate,
+			exception_fault_address, exception_trapno, exception_err, has_exception_state, &bsd_signum);
 	if (ret < 0) {
 #if defined(__x86_64__)
 		__simple_printf("sigprocess failed internally while processing Linux signal %d: %d in PID %d (RIP 0x%llx)\n", linux_signum, ret, getpid(), (unsigned long long)ctxt->uc_mcontext.gregs.rip);
@@ -972,7 +1063,8 @@ void sigexc_handler(int linux_signum, struct linux_siginfo* info, struct linux_u
 			tap(bsd_signum);
 	}
 
-	if (sig_handlers[linux_signum] != SIG_IGN)
+	if (sig_handlers[linux_signum] != SIG_IGN
+			&& !(sig_handlers[linux_signum] == SIG_DFL && default_action_ignores(bsd_signum)))
 	{
 		if (sig_handlers[linux_signum])
 		{
@@ -992,15 +1084,6 @@ void sigexc_handler(int linux_signum, struct linux_siginfo* info, struct linux_u
 			if (!(sig_flags[linux_signum] & BSD_SA_NODEFER))
 				set |= (1ull << (linux_signum-1));
 
-			// On another stack, the mask is applied there (run_app_handler_off_altstack());
-			// until then every signal stays blocked, and so it stays after that handler (the
-			// rest of this one, dserver_rpc_interrupt_exit() included, runs with it until
-			// sigreturn restores the interrupted mask; faults then cannot be caught there).
-			uintptr_t stack = ctxt ? app_handler_stack(linux_signum, ctxt) : 0;
-			const linux_sigset_t all = ~0ull;
-			LINUX_SYSCALL(__NR_rt_sigprocmask, 2 /* LINUX_SIG_SETMASK */,
-				stack != 0 ? &all : &set, NULL, sizeof(linux_sigset_t));
-
 			// The guard covers only Darling's own handler code. The
 			// application's handler may fault on purpose (and handle that
 			// fault with its own SIGSEGV handler), as it can on macOS, so
@@ -1008,19 +1091,7 @@ void sigexc_handler(int linux_signum, struct linux_siginfo* info, struct linux_u
 			int lifted_guard_signal = guard_signal();
 			set_guard_signal(0);
 
-			_pthread_setspecific_direct(__PTK_DARLING_SIGNAL_HANDLERS_RUN,
-					(void*)((uintptr_t)_pthread_getspecific_direct(__PTK_DARLING_SIGNAL_HANDLERS_RUN) + 1));
-
-			if (stack != 0)
-			{
-				struct app_handler_call call = { linux_signum, info, ctxt, set, stack };
-				sigexc_call_on_stack(stack, run_app_handler_off_altstack, &call);
-			}
-			else
-				handler_linux_to_bsd(linux_signum, info, ctxt);
-
-			if (ctxt != NULL)
-				keep_current_altstack(ctxt);
+			sigexc_run_app_handler(linux_signum, info, ctxt, &set);
 
 			set_guard_signal(lifted_guard_signal);
 		}

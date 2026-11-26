@@ -24,6 +24,7 @@
 #include <darling/emulation/xnu_syscall/bsd/impl/bsdthread/bsdthread_register.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/bsdthread/workq_kernreturn.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/psynch/psynch_inproc.h>
+#include <darling/emulation/xnu_syscall/mach/impl/mach_sq.h>
 
 #include <darlingserver/rpc.h>
 
@@ -91,6 +92,7 @@ long sys_fork(void)
 	{
 		// in the child
 		psynch_inproc_postfork_child(&psynch_sigmask);
+		mach_sq_postfork_child();
 
 		// x86Sim (2026-11-13): mldr's locks first (elfcalls.h postfork_child): the guard table below closes the
 		// parent's descriptors through mldr's socket bitmap, whose lock another thread may have held at the fork
