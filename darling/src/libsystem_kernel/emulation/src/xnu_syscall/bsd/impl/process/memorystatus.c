@@ -9,8 +9,14 @@
 // app in the background that RunningBoard never suspended (Maps) and every daemon a boot's launch events started
 // (Siri's, Wallet's, ~1 GB) stayed resident.
 //
-// Recorded per process as /private/var/run/x86sim-jetsam/<pid> (rewritten at each change; mtime = when), one line:
+// Recorded per process as /private/var/run/x86sim-jetsam/<pid>, one line padded with spaces to JS_LEN bytes, written in
+// place (never truncated):
 //     <priority> <dirty flags> <user_data> <darwin bg> <darwin role>
+// Issue #52: a busy daemon flips its dirty bit at every XPC transaction edge, ~40 times a second, and each flip was an
+// open + read + close and an open(O_TRUNC) + write + close of this file (each open with Darling's path handling).
+// A process now keeps its own record mapped (MAP_SHARED): reading and changing it are memory accesses; other processes
+// (RunningBoard's band and priority changes) still write the file, which the mapping shows. mtime is the file's
+// creation (or another process's write): jetsam.py only uses it to tell a pid's record from an earlier process's.
 // priority -1 = never set; dirty flags = PROC_DIRTY_TRACKED|ALLOWS_IDLE_EXIT|IS_DIRTY as proc_get_dirty reports them;
 // darwin bg = 1 while RunningBoard has the process backgrounded (setpriority PRIO_DARWIN_PROCESS, PRIO_DARWIN_BG),
 // 0 once it is brought back, -1 never set; darwin role = setpriority(PRIO_DARWIN_ROLE) (UI_FOCAL 1, UI 2, NON_UI 3 =
@@ -30,6 +36,7 @@
 #include <sys/errno.h>
 
 #define JS_DIR "/private/var/run/x86sim-jetsam"
+#define JS_LEN 64
 
 // proc_info.h (PRIVATE)
 #define DC_TRACK 1
@@ -60,23 +67,8 @@ static long parse_num(const char** p)
 	return neg ? -v : v;
 }
 
-static void js_read(int pid, struct js_state* st)
+static void js_parse(const char* buf, struct js_state* st)
 {
-	char path[96], buf[96];
-	st->priority = -1;
-	st->dirty = 0;
-	st->user_data = 0;
-	st->bg = -1;
-	st->role = -1;
-	js_path(path, pid);
-	long fd = sys_openat(-2 /* AT_FDCWD */, path, 0 /* O_RDONLY */, 0);
-	if (fd < 0)
-		return;
-	long n = sys_read(fd, buf, sizeof(buf) - 1);
-	sys_close(fd);
-	if (n <= 0)
-		return;
-	buf[n] = 0;
 	const char* p = buf;
 	st->priority = parse_num(&p);
 	st->dirty = parse_num(&p);
@@ -89,21 +81,117 @@ static void js_read(int pid, struct js_state* st)
 		st->role = parse_num(&p);
 }
 
-static void js_write(int pid, const struct js_state* st)
+static void js_defaults(struct js_state* st)
 {
-	char path[96], buf[96];
+	st->priority = -1;
+	st->dirty = 0;
+	st->user_data = 0;
+	st->bg = -1;
+	st->role = -1;
+}
+
+static void js_format(char* buf, const struct js_state* st)
+{
+	__simple_sprintf(buf, "%d %d %d %d %d", (int)st->priority, (int)st->dirty, (int)st->user_data, (int)st->bg,
+		(int)st->role);
+	int n = (int)__simple_strlen(buf);
+	while (n < JS_LEN - 1)
+		buf[n++] = ' ';
+	buf[JS_LEN - 1] = '\n';
+	buf[JS_LEN] = 0;
+}
+
+static long js_open(int pid, int flags)
+{
+	char path[96];
 	js_path(path, pid);
-	long fd = sys_openat(-2, path, 0x1 | 0x200 | 0x400 /* O_WRONLY|O_CREAT|O_TRUNC */, 0644);
-	if (fd == -2 /* ENOENT: no directory yet */)
+	long fd = sys_openat(-2 /* AT_FDCWD */, path, flags, 0644);
+	if (fd == -2 /* ENOENT: no directory yet */ && (flags & 0x200 /* O_CREAT */))
 	{
 		sys_mkdir(JS_DIR, 0755);
-		fd = sys_openat(-2, path, 0x1 | 0x200 | 0x400, 0644);
+		fd = sys_openat(-2, path, flags, 0644);
 	}
+	return fd;
+}
+
+// This process's own record, mapped (NULL: not mapped, e.g. no directory). A fork child maps its own.
+static char* self_map;
+static int self_map_pid;
+
+static char* js_self(void)
+{
+	int me = (int)sys_getpid();
+	if (self_map_pid == me)
+		return self_map;
+	self_map_pid = me;
+	self_map = 0;
+	long fd = js_open(me, 0x2 | 0x200 /* O_RDWR|O_CREAT */);
+	if (fd < 0)
+		return 0;
+	char buf[JS_LEN + 1];
+	long n = LINUX_SYSCALL(__NR_pread64, fd, buf, JS_LEN, LL_ARG(0));
+	if (n < JS_LEN)
+	{
+		// new (or an earlier version's short record): rewrite it at full length
+		struct js_state st;
+		js_defaults(&st);
+		if (n > 0) { buf[n] = 0; js_parse(buf, &st); }
+		js_format(buf, &st);
+		LINUX_SYSCALL(__NR_pwrite64, fd, buf, JS_LEN, LL_ARG(0));
+	}
+	void* m = (void*)LINUX_SYSCALL6(__NR_mmap, 0, 4096, 0x1 | 0x2 /* PROT_READ|PROT_WRITE */, 0x1 /* MAP_SHARED */, fd, 0);
+	sys_close(fd);
+	if ((unsigned long)m > (unsigned long)-4096)
+		return 0;
+	self_map = m;
+	return self_map;
+}
+
+static void js_read(int pid, struct js_state* st)
+{
+	char buf[JS_LEN + 1];
+	js_defaults(st);
+	if (pid == (int)sys_getpid())
+	{
+		char* m = js_self();
+		if (m)
+		{
+			for (int i = 0; i < JS_LEN; i++)
+				buf[i] = ((volatile char*)m)[i];
+			buf[JS_LEN] = 0;
+			js_parse(buf, st);
+			return;
+		}
+	}
+	long fd = js_open(pid, 0 /* O_RDONLY */);
 	if (fd < 0)
 		return;
-	__simple_sprintf(buf, "%d %d %d %d %d\n", (int)st->priority, (int)st->dirty, (int)st->user_data, (int)st->bg,
-		(int)st->role);
-	sys_write(fd, buf, __simple_strlen(buf));
+	long n = sys_read(fd, buf, JS_LEN);
+	sys_close(fd);
+	if (n <= 0)
+		return;
+	buf[n] = 0;
+	js_parse(buf, st);
+}
+
+static void js_write(int pid, const struct js_state* st)
+{
+	char buf[JS_LEN + 1];
+	js_format(buf, st);
+	if (pid == (int)sys_getpid())
+	{
+		char* m = js_self();
+		if (m)
+		{
+			for (int i = 0; i < JS_LEN; i++)
+				((volatile char*)m)[i] = buf[i];
+			return;
+		}
+	}
+	long fd = js_open(pid, 0x1 | 0x200 /* O_WRONLY|O_CREAT, never O_TRUNC: the owner may have it mapped */);
+	if (fd < 0)
+		return;
+	LINUX_SYSCALL(__NR_pwrite64, fd, buf, JS_LEN, LL_ARG(0));
 	sys_close(fd);
 }
 
