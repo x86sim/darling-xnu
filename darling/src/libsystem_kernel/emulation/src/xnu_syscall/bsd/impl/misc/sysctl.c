@@ -15,6 +15,7 @@
 #include <darling/emulation/xnu_syscall/bsd/helper/misc/sysctl_sysctl.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/misc/sysctl_net.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/misc/sysctl_vm.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/misc/sysctl_security.h>
 
 extern char *strchr(const char *s, int c);
 extern int strncmp(const char *s1, const char *s2, __SIZE_TYPE__ n);
@@ -25,6 +26,8 @@ extern void* memcpy(void* dst, const void* src, __SIZE_TYPE__ n);
 extern char* strtok_r(char* str, const char* delim, char** saveptr);
 
 #define _CTL_SYSCTL	100
+// x86Sim: XNU's "security" node is OID_AUTO; any number no other top-level node uses
+#define _CTL_SECURITY	0x7000
 
 const struct known_sysctl sysctls_global[] = {
 	{ .oid = CTL_UNSPEC, .type = CTLTYPE_NODE, .exttype = "", .name = "unspec", .subctls = sysctls_unspec },
@@ -34,6 +37,7 @@ const struct known_sysctl sysctls_global[] = {
 	{ .oid = _CTL_SYSCTL, .type = CTLTYPE_NODE, .exttype = "", .name = "sysctl", .subctls = sysctls_sysctl },
 	{ .oid = CTL_NET, .type = CTLTYPE_NODE, .exttype = "", .name = "net", .subctls = sysctls_net },
 	{ .oid = CTL_VM, .type = CTLTYPE_NODE, .exttype = "", .name = "vm", .subctls = sysctls_vm },
+	{ .oid = _CTL_SECURITY, .type = CTLTYPE_NODE, .exttype = "", .name = "security", .subctls = sysctls_security },
 	{ .oid = -1 }, /* terminating entry */
 };
 

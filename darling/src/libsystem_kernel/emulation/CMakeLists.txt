@@ -136,6 +136,7 @@ set(xnu_syscall_bsd_sources
 	src/xnu_syscall/bsd/helper/misc/sysctl_machdep.c
 	src/xnu_syscall/bsd/helper/misc/sysctl_net.c
 	src/xnu_syscall/bsd/helper/misc/sysctl_proc.c
+	src/xnu_syscall/bsd/helper/misc/sysctl_security.c
 	src/xnu_syscall/bsd/helper/misc/sysctl_sysctl.c
 	src/xnu_syscall/bsd/helper/misc/sysctl_unspec.c
 	src/xnu_syscall/bsd/helper/misc/sysctl_vm.c
