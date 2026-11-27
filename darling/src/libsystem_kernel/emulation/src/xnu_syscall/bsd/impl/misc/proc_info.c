@@ -837,8 +837,12 @@ static long _proc_pidinfo_shortbsdinfo(int32_t pid, void* buffer, int32_t bufsiz
 	if (dserver_rpc_task_is_64_bit(pid, &is_64_bit) < 0) {
 		is_64_bit = false;
 	}
+	// x86Sim: PROC_FLAG_LP64 (0x10), as XNU's proc_info.c sets it; P_LP64 (0x4) is the kernel's p_flag bit and here read as
+	// PROC_FLAG_INEXIT. logd marks a process without it as 32-bit in the tracev3 catalog, and LoggingSupport's decoder then
+	// takes long as 4 bytes: a %ld argument (8 bytes) decodes as undefined (OSLogStore components, x86sim sdkcov
+	// func:OSLog.p27ui-log-store)
 	if (is_64_bit)
-		info->pbsi_flags |= P_LP64;
+		info->pbsi_flags |= PROC_FLAG_LP64;
 
 	return sizeof(struct proc_bsdshortinfo); // x86Sim: XNU returns the structure size
 reterr:
