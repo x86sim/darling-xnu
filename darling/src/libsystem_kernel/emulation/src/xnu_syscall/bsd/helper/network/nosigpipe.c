@@ -13,6 +13,8 @@
 #include <darling/emulation/conversion/network/recvmsg.h>
 #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/network/sockutil.h>
+#include <darling/emulation/conversion/stat/common.h>
+#include <darling/emulation/conversion/duct_errno.h>
 
 #define LINUX_SYS_SENDMSG 16
 #define LINUX_MSG_NOSIGNAL 0x4000
@@ -153,6 +155,75 @@ static void forget(int fd, unsigned long long cookie)
 	sigsafe_unlock(&nosigpipe_lock, mask);
 }
 
+// The pseudo-cookie of a descriptor that is not a socket: its file's device and inode, NOSIGPIPE_FILE_BIT set (socket
+// cookies are a counter from 1 and never reach it). 0 when fstat fails.
+static unsigned long long file_cookie(int fd)
+{
+	struct linux_stat st;
+
+	if (LINUX_SYSCALL(__NR_fstat, fd, &st) != 0)
+		return 0;
+	return NOSIGPIPE_FILE_BIT | (((unsigned long long) st.st_dev << 40) ^ (unsigned long long) st.st_ino);
+}
+
+long fd_nosigpipe_set(int fd, int on)
+{
+	unsigned long long cookie = file_cookie(fd), mask;
+	long ret = 0;
+
+	if (cookie == 0)
+		return -EBADF;
+	mask = sigsafe_lock(&nosigpipe_lock);
+	if (on) {
+		unsigned long long* s = slot_make_locked(fd);
+		if (s != NULL)
+			slot_set_locked(s, cookie);
+		else if (fd < NOSIGPIPE_FDS_MAX)
+			ret = -ENOBUFS;
+	} else {
+		// the open file's flag, whichever descriptors carry it
+		for (int p = 0; p < PAGES; p++) {
+			if (pages[p] == NULL)
+				continue;
+			for (int i = 0; i < PAGE_FDS; i++) {
+				if (pages[p][i] == cookie)
+					slot_set_locked(&pages[p][i], 0);
+			}
+		}
+	}
+	sigsafe_unlock(&nosigpipe_lock, mask);
+	return ret;
+}
+
+long fd_nosigpipe_get(int fd, int* on)
+{
+	unsigned long long* s = slot(fd);
+	unsigned long long cookie = file_cookie(fd);
+
+	if (cookie == 0)
+		return -EBADF;
+	*on = s != NULL && __atomic_load_n(s, __ATOMIC_ACQUIRE) == cookie;
+	return 0;
+}
+
+// writev with SIGPIPE blocked on this thread: Linux raises SIGPIPE at the writing thread for a pipe with no reader, and
+// one it raised here is taken back with a zero-timeout sigtimedwait (unless one was pending already: that one stays)
+static long write_nosigpipe(int fd, const struct iovec* iov, int iovcnt)
+{
+	unsigned long long pipe_bit = 1ull << (LINUX_SIGPIPE - 1), old, pending = 0;
+	long ret;
+
+	LINUX_SYSCALL(__NR_rt_sigprocmask, 0 /* LINUX_SIG_BLOCK */, &pipe_bit, &old, sizeof(old));
+	LINUX_SYSCALL(__NR_rt_sigpending, &pending, sizeof(pending));
+	ret = LINUX_SYSCALL(__NR_writev, fd, iov, iovcnt);
+	if (ret == -LINUX_EPIPE && !(pending & pipe_bit)) {
+		struct { long tv_sec, tv_nsec; } zero = { 0, 0 };
+		LINUX_SYSCALL(__NR_rt_sigtimedwait, &pipe_bit, NULL, &zero, sizeof(pipe_bit));
+	}
+	LINUX_SYSCALL(__NR_rt_sigprocmask, 2 /* LINUX_SIG_SETMASK */, &old, NULL, sizeof(old));
+	return ret;
+}
+
 int socket_nosigpipe_write(int fd, const struct iovec* iov, int iovcnt, long* result)
 {
 	unsigned long long* s = slot(fd);
@@ -162,6 +233,17 @@ int socket_nosigpipe_write(int fd, const struct iovec* iov, int iovcnt, long* re
 
 	if (cookie == 0)
 		return 0;
+
+	if (cookie & NOSIGPIPE_FILE_BIT) {
+		// the number was closed some way that didn't forget it, and reused for another file: write() it as before
+		if (file_cookie(fd) != cookie) {
+			forget(fd, cookie);
+			return 0;
+		}
+		ret = write_nosigpipe(fd, iov, iovcnt);
+		*result = ret < 0 ? errno_linux_to_bsd(ret) : ret;
+		return 2;
+	}
 
 #ifdef __NR_socketcall
 	ret = LINUX_SYSCALL(__NR_socketcall, LINUX_SYS_SENDMSG, ((long[6]) { fd, &msg, LINUX_MSG_NOSIGNAL }));

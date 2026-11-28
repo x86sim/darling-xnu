@@ -34,7 +34,10 @@ static long sys_writev_common(int fd, struct iovec* iovp, unsigned int len, bool
 	// a socket with SO_NOSIGPIPE (nosigpipe.h); an iovec count writev() refuses is left to it
 	if (NOSIGPIPE_ACTIVE() && len <= 1024 /* UIO_MAXIOV */) {
 		long sent;
-		if (socket_nosigpipe_write(fd, iovp, len, &sent))
+		int how = socket_nosigpipe_write(fd, iovp, len, &sent);
+		if (how == 2)   // a pipe or other file with F_SETNOSIGPIPE: final (EPIPE without SIGPIPE)
+			return sent;
+		if (how)
 			return sent < 0 ? socket_send_failed(fd, sent, 0, 0) : sent;
 	}
 

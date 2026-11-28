@@ -449,14 +449,16 @@ static long sys_fcntl_common(int fd, int cmd, long arg, bool cancelable)
 			if (ret < 0)
 				return errno_linux_to_bsd(ret);
 			// x86Sim: our SO_NOSIGPIPE table (nosigpipe.h) is kept per socket; a descriptor that is not a socket
-			// (a pipe) is accepted without it, Linux raising SIGPIPE for it as before
+			// (a pipe, a FIFO) has the flag by its file (fd_nosigpipe_*), as XNU keeps it on the open file
 			if (cmd == F_GETNOSIGPIPE) {
 				int on = 0;
 				ret = socket_nosigpipe_get(fd, &on);
-				return (ret < 0) ? ((ret == -ENOTSOCK) ? 0 : ret) : on;
+				if (ret == -ENOTSOCK)
+					ret = fd_nosigpipe_get(fd, &on);
+				return (ret < 0) ? ret : on;
 			}
 			ret = socket_nosigpipe_set(fd, arg != 0);
-			return (ret == -ENOTSOCK) ? 0 : ret;
+			return (ret == -ENOTSOCK) ? fd_nosigpipe_set(fd, arg != 0) : ret;
 		// TODO: implement remaining commands
 		default:
 			if (linux_cmd == -1)

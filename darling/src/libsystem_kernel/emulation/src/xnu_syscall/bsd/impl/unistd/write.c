@@ -48,7 +48,10 @@ static long sys_write_common(int fd, const void* mem, int len, bool cancelable)
 	if (NOSIGPIPE_ACTIVE()) {
 		struct iovec iov = { (void*) mem, len };
 		long sent;
-		if (socket_nosigpipe_write(fd, &iov, 1, &sent))
+		int how = socket_nosigpipe_write(fd, &iov, 1, &sent);
+		if (how == 2)   // a pipe or other file with F_SETNOSIGPIPE: final (EPIPE without SIGPIPE)
+			return sent;
+		if (how)
 			return sent < 0 ? socket_send_failed(fd, sent, 0, 0) : sent;
 	}
 	long bpf_ret;

@@ -147,9 +147,7 @@ static long set_readahead(int fd, long enable)
 {
 	long ret;
 
-	if (enable != 0 && enable != 1)
-		return -EINVAL;
-
+	// Any nonzero value turns read-ahead on, as XNU's fcntl does (measured on macOS: 2, -1 and 100 return 0)
 	ret = LINUX_SYSCALL(__NR_fadvise64, fd, LL_ARG(0ULL), LL_ARG(0ULL),
 			enable ? LINUX_POSIX_FADV_SEQUENTIAL : LINUX_POSIX_FADV_NORMAL);
 	return ret < 0 ? host_error(ret) : 0;

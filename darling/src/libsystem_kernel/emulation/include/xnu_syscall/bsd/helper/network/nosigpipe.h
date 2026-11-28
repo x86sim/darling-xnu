@@ -27,8 +27,18 @@ extern volatile int nosigpipe_fds;
 long socket_nosigpipe_set(int fd, int on);
 long socket_nosigpipe_get(int fd, int* on);
 
+// fcntl F_SETNOSIGPIPE / F_GETNOSIGPIPE on a descriptor that is not a socket (a pipe, a FIFO): XNU keeps the flag on the
+// open file (FG_NOSIGPIPE) and a write to a pipe with no reader then fails with EPIPE without SIGPIPE (measured on
+// macOS 27). Kept in the same table with a pseudo-cookie (NOSIGPIPE_FILE_BIT, the file's device and inode), so close,
+// dup and fork treat it as a socket's flag. 0 or a negative BSD errno.
+#define NOSIGPIPE_FILE_BIT (1ull << 63)
+long fd_nosigpipe_set(int fd, int on);
+long fd_nosigpipe_get(int fd, int* on);
+
 // write/writev on fd: if fd is a socket with SO_NOSIGPIPE, sends iov through sendmsg with MSG_NOSIGNAL, stores the
-// result (bytes, or a negative BSD errno) in *result and returns 1. Returns 0 for other descriptors.
+// result (bytes, or a negative BSD errno) in *result and returns 1. If fd is another descriptor with F_SETNOSIGPIPE,
+// writes iov with SIGPIPE blocked (and a SIGPIPE that write raised taken back), stores the result and returns 2: the
+// result is final (no socket error paths). Returns 0 for other descriptors.
 struct iovec;
 int socket_nosigpipe_write(int fd, const struct iovec* iov, int iovcnt, long* result);
 
