@@ -21,6 +21,7 @@
 #include <darling/emulation/xnu_syscall/bsd/helper/misc/nofile_limit.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/bpf/bpf_device.h>
 #include <darling/emulation/xnu_syscall/bsd/helper/network/nosigpipe.h>
+#include <darling/emulation/xnu_syscall/bsd/helper/misc/fstore_passthrough.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/misc/csops.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/stat/fstat.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/unistd/close.h>
@@ -395,86 +396,27 @@ static long sys_fcntl_common(int fd, int cmd, long arg, bool cancelable)
 			linux_struct->l_pid = (cmd >= 90) ? 0 : bsd_struct->l_pid;
 			arg = linux_struct;
 		} break;
-		// x86Sim (Speed 27): F_PREALLOCATE (struct fstore): reserve space without changing the file's size, as
-		// Linux's fallocate(FALLOC_FL_KEEP_SIZE). It was EINVAL: Core ML's BNNS graph compiler ("failed to preallocate
-		// file") failed, so Spotlight's query parser couldn't load its model in time and Spotlight crashed on typing.
-		// A file system without fallocate gets XNU's answer for space it doesn't have to reserve: all of it.
-		case 42: {
-			struct bsd_fstore {
-				unsigned int fst_flags;
-				int fst_posmode;
-				long long fst_offset;
-				long long fst_length;
-				long long fst_bytesalloc;
-			}* fst = (struct bsd_fstore*) arg;
-			long long off;
-			if (fst == NULL || fst->fst_length < 0)
-				return -EINVAL;
-			fst->fst_bytesalloc = 0;
-			if (fst->fst_posmode == 3) { // F_PEOFPOSMODE: from the end of the file
-				long long end = LINUX_SYSCALL(__NR_lseek, fd, 0, 2 /* SEEK_END */);
-				if (end < 0)
-					return errno_linux_to_bsd(end);
-				off = end + fst->fst_offset;
-			} else if (fst->fst_posmode == 4) { // F_VOLPOSMODE
-				off = fst->fst_offset;
-			} else {
-				return -EINVAL;
-			}
-			if (off < 0)
-				return -EINVAL;
-			if (fst->fst_length == 0)
-				return 0;
-			ret = LINUX_SYSCALL(__NR_fallocate, fd, 1 /* FALLOC_FL_KEEP_SIZE */, off, fst->fst_length);
-			if (ret < 0 && ret != -LINUX_EOPNOTSUPP && ret != -LINUX_ENOSYS)
-				return errno_linux_to_bsd(ret);
-			fst->fst_bytesalloc = fst->fst_length;
-			return 0;
-		}
-		// x86Sim (Speed 27): read-ahead and caching hints (XNU: per-file flags): Linux's page cache advice
-		case 45: // F_RDAHEAD
-			LINUX_SYSCALL(__NR_fadvise64, fd, 0, 0, arg ? 2 /* POSIX_FADV_SEQUENTIAL */ : 0 /* NORMAL */);
-			return 0;
-		case 44: { // F_RDADVISE (struct radvisory: offset, count): read the range ahead
-			struct { long long ra_offset; int ra_count; }* ra = (void*) arg;
-			if (ra == NULL || ra->ra_offset < 0 || ra->ra_count < 0)
-				return -EINVAL;
-			LINUX_SYSCALL(__NR_fadvise64, fd, ra->ra_offset, ra->ra_count, 3 /* POSIX_FADV_WILLNEED */);
-			return 0;
-		}
+		case F_PREALLOCATE:
+		case F_PUNCHHOLE:
+		case F_RDADVISE:
+		case F_RDAHEAD:
+		case F_FULLFSYNC:
+		case F_BARRIERFSYNC:
+		case F_LOG2PHYS:
+		case F_LOG2PHYS_EXT:
+			// Storage-control commands whose contract has a Linux host
+			// analogue. The helper returns the Darwin errno directly.
+			return darling_fstore_passthrough(fd, (unsigned long) cmd, (void*) arg);
 		// F_SETCONFINED / F_GETCONFINED (95, 96): a confined descriptor may not be sent to another process (SQLite
 		// sets it on its database files). Nothing sends descriptors behind a program's back here: accepted, never set.
 		case 95:
 			return 0;
 		case 96:
 			return 0;
-		// x86Sim: F_SINGLE_WRITER (76): a hint for the I/O throttle that one process writes the file. Spotlight's
-		// journal (searchd) sets it and took the EINVAL as a failed journal write ("TOC update FAILED err=22").
-		case 76:
-			return 0;
-		// F_BARRIERFSYNC: the writes before it reach the disk before those after: fdatasync gives at least that
-		case 85:
-			ret = LINUX_SYSCALL1(__NR_fdatasync, fd);
-			return ret < 0 ? errno_linux_to_bsd(ret) : 0;
-		// F_PUNCHHOLE (struct fpunchhole: flags, reserved, offset, length): deallocate, keeping the size
-		case 99: {
-			struct { unsigned int fp_flags; unsigned int reserved; long long fp_offset; long long fp_length; }* ph = (void*) arg;
-			if (ph == NULL || ph->fp_flags != 0 || ph->fp_offset < 0 || ph->fp_length < 0)
-				return -EINVAL;
-			ret = LINUX_SYSCALL(__NR_fallocate, fd, 3 /* FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE */,
-				ph->fp_offset, ph->fp_length);
-			return ret < 0 ? errno_linux_to_bsd(ret) : 0;
-		}
 		// F_GETPATH_NOFIRMLINK: there are no firmlinks here
 		case 102:
 			ret = fdpath(fd, arg, MAXPATHLEN);
 			return ret < 0 ? errno_linux_to_bsd(ret) : 0;
-		case F_FULLFSYNC: {
-			ret = LINUX_SYSCALL1(__NR_fsync, fd);
-			if (ret < 0)
-				ret = errno_linux_to_bsd(ret);
-			return 0;
-		};
 		case F_NOCACHE:
 		{
 			// Only a caching hint; Linux has no per-descriptor equivalent
@@ -495,6 +437,26 @@ static long sys_fcntl_common(int fd, int cmd, long arg, bool cancelable)
 		case F_GETPROTECTIONCLASS:
 		case F_SETPROTECTIONCLASS:
 			return protection_class(fd, cmd, (int) arg);
+		// F_SINGLE_WRITER: a hint that one process writes the file; there is nothing to do for it here.
+		// x86Sim: Spotlight's journal (searchd) sets it and took the EINVAL as a failed journal write
+		// ("TOC update FAILED err=22").
+		case F_SINGLE_WRITER:
+			return 0;
+		case F_SETNOSIGPIPE:
+		case F_GETNOSIGPIPE:
+			// The descriptor has to exist, as on Darwin.
+			ret = LINUX_SYSCALL(__NR_fcntl, fd, LINUX_F_GETFD, 0);
+			if (ret < 0)
+				return errno_linux_to_bsd(ret);
+			// x86Sim: our SO_NOSIGPIPE table (nosigpipe.h) is kept per socket; a descriptor that is not a socket
+			// (a pipe) is accepted without it, Linux raising SIGPIPE for it as before
+			if (cmd == F_GETNOSIGPIPE) {
+				int on = 0;
+				ret = socket_nosigpipe_get(fd, &on);
+				return (ret < 0) ? ((ret == -ENOTSOCK) ? 0 : ret) : on;
+			}
+			ret = socket_nosigpipe_set(fd, arg != 0);
+			return (ret == -ENOTSOCK) ? 0 : ret;
 		// TODO: implement remaining commands
 		default:
 			if (linux_cmd == -1)

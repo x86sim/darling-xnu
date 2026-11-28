@@ -18,7 +18,7 @@ long sys_faccessat(int fd, const char* filename, int amode, int flag)
 	struct vchroot_expand_args vc;
 	int linux_flags;
 
-	// XNU reports a bad path pointer as EFAULT (the iOS simulator's libsystem_darwin calls access(NULL, 0))
+	// XNU reports a bad path pointer as EFAULT (Darwin's libsystem calls access(NULL, 0))
 	if (filename == 0)
 		return -EFAULT;
 

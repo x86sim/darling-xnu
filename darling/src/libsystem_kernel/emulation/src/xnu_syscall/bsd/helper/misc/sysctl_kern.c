@@ -37,6 +37,8 @@ enum {
 	_KERN_MEMORYSTATUS_LEVEL,
 	_KERN_NUM_FILES,
 	_KERN_HV_VMM_PRESENT,
+	_KERN_OSVARIANT_STATUS,
+	_KERN_OSRELEASETYPE,
 
 	_KERN_SEMMNS = 1000,
 };
@@ -67,6 +69,8 @@ static sysctl_handler(handle_osrevision);
 static sysctl_handler(handle_bootargs);
 static sysctl_handler(handle_bootsessionuuid);
 static sysctl_handler(handle_hv_vmm_present);
+static sysctl_handler(handle_osvariant_status);
+static sysctl_handler(handle_osreleasetype);
 static sysctl_handler(handle_secure_kernel);
 
 extern int _sysctl_proc(int what, int flag, struct kinfo_proc* out, unsigned long* buflen);
@@ -105,6 +109,8 @@ const struct known_sysctl sysctls_kern[] = {
 	{ .oid = _KERN_BOOTSESSIONUUID, .type = CTLTYPE_STRING, .exttype = "S", .name = "bootsessionuuid", .handler = handle_bootsessionuuid },
 	{ .oid = KERN_OSREV, .type = CTLTYPE_INT, .exttype = "I", .name = "osrevision", .handler = handle_osrevision },
 	{ .oid = _KERN_HV_VMM_PRESENT, .type = CTLTYPE_INT, .exttype = "I", .name = "hv_vmm_present", .handler = handle_hv_vmm_present },
+	{ .oid = _KERN_OSVARIANT_STATUS, .type = CTLTYPE_QUAD, .exttype = "Q", .name = "osvariant_status", .handler = handle_osvariant_status },
+	{ .oid = _KERN_OSRELEASETYPE, .type = CTLTYPE_STRING, .exttype = "S", .name = "osreleasetype", .handler = handle_osreleasetype },
 	{ .oid = _KERN_SECURE_KERNEL, .type = CTLTYPE_INT, .exttype = "I", .name = "secure_kernel", .handler = handle_secure_kernel },
 	{ .oid = KERN_SYSV, .type = CTLTYPE_NODE, .exttype = "", .name = "sysv", .subctls = sysctls_kern_sysv },
 	{ .oid = -1 }
@@ -594,5 +600,24 @@ static sysctl_handler(handle_num_files) {
 	if (!read_string("/proc/sys/fs/file-nr", buf, sizeof(buf)))
 		return -ENOENT;
 	*((int*) old) = (int) __simple_atoi(buf, NULL);
+	return 0;
+}
+
+// QUIRK: kern.osvariant_status and kern.osreleasetype are not documented. Observed by black-box
+// reads (tier 2): on macOS 26.7.3 (25G342, x86_64) osvariant_status is the 8-byte quad
+// 0x70010000f388828a and osreleasetype is the string "User"; on macOS 10.14.4 osvariant_status is
+// 0x70000000f000028a. We report the macOS 26.7.3 value, whose two-bit slots libdarwin reads with
+// status2bool().
+// Test: guest test sysctl_osvariant_procs (expects exactly 0x70010000f388828a and "User").
+static sysctl_handler(handle_osvariant_status)
+{
+	sysctl_handle_size(sizeof(unsigned long long));
+	*((unsigned long long*) old) = 0x70010000f388828aULL;
+	return 0;
+}
+
+static sysctl_handler(handle_osreleasetype)
+{
+	copyout_string("User", (char*) old, oldlen);
 	return 0;
 }

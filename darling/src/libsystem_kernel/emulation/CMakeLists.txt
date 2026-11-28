@@ -127,6 +127,7 @@ set(xnu_syscall_bsd_sources
 	src/xnu_syscall/bsd/helper/misc/readline.c
 	src/xnu_syscall/bsd/helper/misc/fdpath.c
 	src/xnu_syscall/bsd/helper/misc/dataless.c
+	src/xnu_syscall/bsd/helper/misc/fstore_passthrough.c
 	src/xnu_syscall/bsd/helper/misc/nofile_limit.c
 	src/xnu_syscall/bsd/helper/misc/posix_ipc_name.c
 	src/xnu_syscall/bsd/helper/misc/host_platform.c
@@ -229,6 +230,7 @@ set(xnu_syscall_bsd_sources
 	src/xnu_syscall/bsd/impl/network/recvfrom.c
 	src/xnu_syscall/bsd/impl/network/recvmsg.c
 	src/xnu_syscall/bsd/impl/network/sendmsg.c
+	src/xnu_syscall/bsd/impl/network/sendfile.c
 	src/xnu_syscall/bsd/impl/network/msg_x.c
 	src/xnu_syscall/bsd/impl/network/sendto.c
 	src/xnu_syscall/bsd/impl/network/setsockopt.c
@@ -297,6 +299,7 @@ set(xnu_syscall_bsd_sources
 	src/xnu_syscall/bsd/impl/time/getitimer.c
 	src/xnu_syscall/bsd/impl/time/gettimeofday.c
 	src/xnu_syscall/bsd/impl/time/ntp_adjtime.c
+	src/xnu_syscall/bsd/impl/time/ntp_gettime.c
 	src/xnu_syscall/bsd/impl/time/setitimer.c
 	src/xnu_syscall/bsd/impl/time/utimes.c
 	src/xnu_syscall/bsd/impl/unistd/access.c
@@ -348,14 +351,15 @@ set(xnu_syscall_bsd_sources
 	src/xnu_syscall/bsd/impl/unistd/pread.c
 	src/xnu_syscall/bsd/impl/unistd/preadv.c
 	src/xnu_syscall/bsd/impl/unistd/pwrite.c
-	src/xnu_syscall/bsd/impl/mach/mach_eventlink.c
 	src/xnu_syscall/bsd/impl/unistd/pwritev.c
+	src/xnu_syscall/bsd/impl/mach/mach_eventlink.c
 	src/xnu_syscall/bsd/impl/unistd/read.c
 	src/xnu_syscall/bsd/impl/unistd/readlink.c
 	src/xnu_syscall/bsd/impl/unistd/readlinkat.c
 	src/xnu_syscall/bsd/impl/unistd/readv.c
 	src/xnu_syscall/bsd/impl/unistd/rename.c
 	src/xnu_syscall/bsd/impl/unistd/renameat.c
+	src/xnu_syscall/bsd/impl/unistd/renameatx_np.c
 	src/xnu_syscall/bsd/impl/unistd/setegid.c
 	src/xnu_syscall/bsd/impl/unistd/seteuid.c
 	src/xnu_syscall/bsd/impl/unistd/setgid.c

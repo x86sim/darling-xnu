@@ -3,7 +3,7 @@
 
 #include <darling/emulation/conversion/network/recvmsg.h>
 
-// x86Sim: XNU's batched datagram calls (syscalls 480 / 481, libsystem_kernel's recvmsg_x / sendmsg_x). They were
+// XNU's batched datagram calls (syscalls 480 / 481, libsystem_kernel's recvmsg_x / sendmsg_x). They were
 // missing from the BSD table and returned ENOSYS. struct msghdr_x is struct msghdr followed by the datagram's length.
 struct bsd_msghdr_x
 {

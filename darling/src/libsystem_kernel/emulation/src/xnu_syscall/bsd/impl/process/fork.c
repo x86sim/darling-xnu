@@ -109,6 +109,11 @@ long sys_fork(void)
 		nofile_limit_postfork_child();
 		bpf_device_postfork_child();
 		aio_postfork_child(); // x86Sim
+		// x86Sim: no workq_postfork_child (our workqueue in workq_kernreturn.c has none)
+#if defined(TEST) || !defined(VARIANT_DYLD)
+		extern void vchroot_icase_postfork_child(void);
+		vchroot_icase_postfork_child();
+#endif
 
 		// create a new dserver RPC socket
 		__dserver_per_thread_socket_refresh();

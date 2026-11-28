@@ -109,7 +109,7 @@ int __dserver_per_thread_socket(void) {
 	return elfcalls()->dserver_per_thread_socket();
 };
 
-// x86Sim: mldr's locks reset in a fork's child (see elfcalls.h)
+// mldr's locks reset in a fork's child (see elfcalls.h)
 void __darling_elf_postfork_child(void) {
 	if (elfcalls()->postfork_child)
 		elfcalls()->postfork_child();

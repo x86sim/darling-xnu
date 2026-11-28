@@ -1,7 +1,5 @@
-// x86Sim: XNU BSD syscalls 496-498, the mach eventlink signal / wait "traps" (libsyscall mach_eventlink.c): done by
+// XNU BSD syscalls 496-498, the mach eventlink signal / wait "traps" (libsyscall mach_eventlink.c): done by
 // darlingserver's XNU (ipc_eventlink.c), which writes the 64-bit result (count | error << 56) to `result`.
-// They were missing: os_eventlink (AUAudioUnit's out-of-process render pipe: speech synthesis, AUv3 extensions)
-// failed to activate.
 #include <darling/emulation/xnu_syscall/bsd/impl/mach/mach_eventlink.h>
 
 #include <darling/emulation/common/base.h>
@@ -15,7 +13,7 @@
 // mach/mach_eventlink_types.h: error in the top byte
 #define EL_RESULT(kr) ((uint64_t)(kr) << 56)
 
-static long finish(int code, uint64_t result) {
+static uint64_t finish(int code, uint64_t result) {
 	if (code < 0) {
 		if (code == -LINUX_EINTR)
 			return EL_RESULT(KERN_ABORTED);
@@ -27,18 +25,18 @@ static long finish(int code, uint64_t result) {
 	return result;
 }
 
-long sys_mach_eventlink_signal(unsigned int eventlink_port, uint64_t signal_count) {
+uint64_t sys_mach_eventlink_signal(unsigned int eventlink_port, uint64_t signal_count) {
 	uint64_t result = 0;
 	return finish(dserver_rpc_mach_eventlink_signal(eventlink_port, signal_count, &result), result);
 }
 
-long sys_mach_eventlink_wait_until(unsigned int eventlink_port, uint64_t wait_count, uint64_t deadline,
+uint64_t sys_mach_eventlink_wait_until(unsigned int eventlink_port, uint64_t wait_count, uint64_t deadline,
 		unsigned int clock_id, unsigned int option) {
 	uint64_t result = 0;
 	return finish(dserver_rpc_mach_eventlink_wait_until(eventlink_port, wait_count, deadline, clock_id, option, &result), result);
 }
 
-long sys_mach_eventlink_signal_wait_until(unsigned int eventlink_port, uint64_t wait_count, uint64_t signal_count,
+uint64_t sys_mach_eventlink_signal_wait_until(unsigned int eventlink_port, uint64_t wait_count, uint64_t signal_count,
 		uint64_t deadline, unsigned int clock_id, unsigned int option) {
 	uint64_t result = 0;
 	return finish(dserver_rpc_mach_eventlink_signal_wait_until(eventlink_port, wait_count, signal_count, deadline, clock_id,

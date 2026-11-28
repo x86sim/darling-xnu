@@ -125,6 +125,7 @@
 #define VOL_CAP_FMT_WRITE_GENERATION_COUNT 0x00100000
 #define VOL_CAP_INT_CLONE           0x00010000
 #define VOL_CAP_INT_ATTRLIST        0x00000002
+#define VOL_CAP_INT_ALLOCATE        0x00000040
 #define VOL_CAP_INT_ADVLOCK         0x00000100
 #define VOL_CAP_INT_FLOCK           0x00000200
 #define VOL_CAP_INT_USERACCESS      0x00000800
@@ -728,7 +729,7 @@ struct xnu_attrlist* alist, void *attributeBuffer, __SIZE_TYPE__ bufferSize, uns
 			| VOL_CAP_FMT_DOCUMENT_ID | VOL_CAP_FMT_WRITE_GENERATION_COUNT;
 		caps[VOL_CAPABILITIES_INTERFACES] = VOL_CAP_INT_ATTRLIST | VOL_CAP_INT_ADVLOCK | VOL_CAP_INT_FLOCK
 			| VOL_CAP_INT_USERACCESS | VOL_CAP_INT_EXTENDED_ATTR | VOL_CAP_INT_RENAME_SWAP | VOL_CAP_INT_RENAME_EXCL
-			| VOL_CAP_INT_CLONE;
+			| VOL_CAP_INT_CLONE | VOL_CAP_INT_ALLOCATE; // ALLOCATE: F_PREALLOCATE (upstream's capabilities)
 		// valid[]: every capability bit is answered
 		caps[4] = caps[5] = 0xFFFFFFFF;
 		getattr_put(&p, caps, sizeof(caps));
